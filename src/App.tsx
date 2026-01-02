@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { configureCanvasContext } from './gpu/context'
+import { configureCanvasContext, type GpuContext } from './gpu/context'
 import { Renderer } from './gpu/Renderer'
 import { useWebGpu } from './gpu/useWebGpu'
+import { useObservedDimensions } from './hooks/useObservedDimensions'
 
 const DEFAULT_PARAMS = {
   grainEnabled: true,
@@ -215,18 +216,41 @@ export default function App() {
   )
 }
 
+interface ViewState {
+  zoom: number
+  centerX: number
+  centerY: number
+}
+
+const DEFAULT_VIEW_STATE: ViewState = { zoom: 1.0, centerX: 0.5, centerY: 0.5 }
+const MIN_ZOOM = 0.1
+const MAX_ZOOM = 32
+const ZOOM_STEP = 1.2 // Multiplier per scroll tick or button click
+
 function WebGpuCanvas({
   image,
   ctx,
   params,
 }: {
   image: ImageBitmap
-  ctx: import('./gpu/context').GpuContext
+  ctx: GpuContext
   params: EffectParams
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const rendererRef = useRef<Renderer | null>(null)
   const canvasContextRef = useRef<GPUCanvasContext | null>(null)
+
+  // View state (zoom and pan)
+  const [viewState, setViewState] = useState<ViewState>(DEFAULT_VIEW_STATE)
+
+  // Container dimensions for canvas sizing and zoom percentage calculation
+  const [containerRef, containerSize] = useObservedDimensions<HTMLDivElement>()
+
+  // Drag state for panning
+  const [isDragging, setIsDragging] = useState(false)
+  const dragStartRef = useRef<{ x: number; y: number; centerX: number; centerY: number } | null>(
+    null,
+  )
 
   // Initialize renderer once
   useEffect(() => {
@@ -237,44 +261,187 @@ function WebGpuCanvas({
     }
   }, [ctx])
 
-  // Configure canvas to fill container, handle resize
+  // Sync view state with renderer and trigger re-render
+  useEffect(() => {
+    const renderer = rendererRef.current
+    const canvasContext = canvasContextRef.current
+    if (!renderer || !canvasContext) return
+
+    renderer.setViewState(viewState)
+    renderer.render(canvasContext)
+  }, [viewState])
+
+  // Zoom toward a specific point
+  function zoomToward(
+    newZoom: number,
+    targetX: number,
+    targetY: number,
+    currentZoom: number,
+    currentCenterX: number,
+    currentCenterY: number,
+  ): ViewState {
+    // Clamp zoom
+    const clampedZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, newZoom))
+
+    // Calculate new center to keep targetX/targetY at the same screen position
+    // Before: screen_pos = (target - center) * zoom + 0.5
+    // After:  screen_pos = (target - new_center) * new_zoom + 0.5
+    // Solving: new_center = target - (target - center) * (zoom / new_zoom)
+    const zoomRatio = currentZoom / clampedZoom
+    const newCenterX = targetX - (targetX - currentCenterX) * zoomRatio
+    const newCenterY = targetY - (targetY - currentCenterY) * zoomRatio
+
+    return { zoom: clampedZoom, centerX: newCenterX, centerY: newCenterY }
+  }
+
+  // Handle scroll-to-zoom (added via useEffect to use { passive: false })
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
 
-    const container = canvas.parentElement
-    if (!container) return
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault()
+
+      const rect = canvas.getBoundingClientRect()
+      const canvasX = (e.clientX - rect.left) / rect.width
+      const canvasY = (e.clientY - rect.top) / rect.height
+
+      // Convert canvas coords to image coords using current view
+      const imageX = (canvasX - 0.5) / viewState.zoom + viewState.centerX
+      const imageY = (canvasY - 0.5) / viewState.zoom + viewState.centerY
+
+      // Determine zoom direction
+      const zoomIn = e.deltaY < 0
+      const zoomFactor = zoomIn ? ZOOM_STEP : 1 / ZOOM_STEP
+      const newZoom = viewState.zoom * zoomFactor
+
+      setViewState(
+        zoomToward(newZoom, imageX, imageY, viewState.zoom, viewState.centerX, viewState.centerY),
+      )
+    }
+
+    canvas.addEventListener('wheel', handleWheel, { passive: false })
+    return () => {
+      canvas.removeEventListener('wheel', handleWheel)
+    }
+  }, [viewState])
+
+  // Handle drag start
+  function handleMouseDown(e: React.MouseEvent<HTMLCanvasElement>) {
+    if (e.button !== 0) return // Left click only
+
+    setIsDragging(true)
+    dragStartRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      centerX: viewState.centerX,
+      centerY: viewState.centerY,
+    }
+  }
+
+  // Handle drag move
+  function handleMouseMove(e: React.MouseEvent<HTMLCanvasElement>) {
+    if (!isDragging || !dragStartRef.current) return
+
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const rect = canvas.getBoundingClientRect()
+
+    // Calculate drag delta in image-space units
+    const deltaX = (e.clientX - dragStartRef.current.x) / rect.width / viewState.zoom
+    const deltaY = (e.clientY - dragStartRef.current.y) / rect.height / viewState.zoom
+
+    setViewState({
+      zoom: viewState.zoom,
+      centerX: dragStartRef.current.centerX - deltaX,
+      centerY: dragStartRef.current.centerY - deltaY,
+    })
+  }
+
+  // Handle drag end
+  function handleMouseUp() {
+    setIsDragging(false)
+    dragStartRef.current = null
+  }
+
+  // Zoom control functions for toolbar
+  function handleZoomIn() {
+    const newZoom = viewState.zoom * ZOOM_STEP
+    setViewState(
+      zoomToward(
+        newZoom,
+        viewState.centerX,
+        viewState.centerY,
+        viewState.zoom,
+        viewState.centerX,
+        viewState.centerY,
+      ),
+    )
+  }
+
+  function handleZoomOut() {
+    const newZoom = viewState.zoom / ZOOM_STEP
+    setViewState(
+      zoomToward(
+        newZoom,
+        viewState.centerX,
+        viewState.centerY,
+        viewState.zoom,
+        viewState.centerX,
+        viewState.centerY,
+      ),
+    )
+  }
+
+  function handleFitToWindow() {
+    setViewState(DEFAULT_VIEW_STATE)
+  }
+
+  // Calculate actual image scale (percentage of native image size)
+  // At zoom=1 (fit to window), the image is scaled to fit the canvas
+  // This calculates what percentage of the native image pixels we're showing
+  function getActualImageScale(): number {
+    if (!containerSize) return 100
+
+    const imageAspect = image.width / image.height
+    const canvasAspect = containerSize.width / containerSize.height
+
+    // The shader fits the image within the canvas, so we need to figure out
+    // which dimension is the limiting factor
+    let baseScale: number
+    if (imageAspect > canvasAspect) {
+      // Image is wider than canvas - width is the limiting factor
+      baseScale = containerSize.width / image.width
+    } else {
+      // Image is taller than canvas - height is the limiting factor
+      baseScale = containerSize.height / image.height
+    }
+
+    // Multiply by current zoom to get actual scale
+    return baseScale * viewState.zoom * 100
+  }
+
+  // Configure canvas when container size changes
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas || !containerSize) return
 
     // Size canvas to fill container (shader handles aspect ratio)
-    const updateSize = () => {
-      const containerWidth = container.clientWidth
-      const containerHeight = container.clientHeight
+    canvas.width = Math.round(containerSize.width * window.devicePixelRatio)
+    canvas.height = Math.round(containerSize.height * window.devicePixelRatio)
+    canvas.style.width = `${String(containerSize.width)}px`
+    canvas.style.height = `${String(containerSize.height)}px`
 
-      canvas.width = Math.round(containerWidth * window.devicePixelRatio)
-      canvas.height = Math.round(containerHeight * window.devicePixelRatio)
-      canvas.style.width = `${String(containerWidth)}px`
-      canvas.style.height = `${String(containerHeight)}px`
+    const canvasContext = configureCanvasContext(canvas, ctx)
+    canvasContextRef.current = canvasContext
 
-      const canvasContext = configureCanvasContext(canvas, ctx)
-      canvasContextRef.current = canvasContext
-
-      // Re-render after resize
-      const renderer = rendererRef.current
-      if (renderer) {
-        renderer.render(canvasContext)
-      }
+    // Re-render after resize
+    const renderer = rendererRef.current
+    if (renderer) {
+      renderer.render(canvasContext)
     }
-
-    updateSize()
-
-    // Handle window resize
-    const resizeObserver = new ResizeObserver(updateSize)
-    resizeObserver.observe(container)
-
-    return () => {
-      resizeObserver.disconnect()
-    }
-  }, [ctx])
+  }, [ctx, containerSize])
 
   // Update grain params and regenerate tiles when grain settings change (debounced)
   useEffect(() => {
@@ -305,14 +472,18 @@ function WebGpuCanvas({
     }
   }, [params.grainSize])
 
-  // Upload image and render
+  // Upload image when it changes
   useEffect(() => {
     const renderer = rendererRef.current
-    const canvasContext = canvasContextRef.current
-    if (!renderer || !canvasContext) return
+    if (!renderer) return
 
     renderer.uploadImage(image)
-    renderer.render(canvasContext)
+
+    // Trigger a render if canvas context is ready
+    const canvasContext = canvasContextRef.current
+    if (canvasContext) {
+      renderer.render(canvasContext)
+    }
   }, [image])
 
   // Debug mode keyboard shortcuts (secret!)
@@ -356,7 +527,67 @@ function WebGpuCanvas({
     }
   }, [])
 
-  return <canvas ref={canvasRef} className='max-h-full max-w-full' />
+  // Determine cursor style based on zoom and drag state
+  const canZoom = viewState.zoom > 1.0
+  const cursorClass = isDragging ? 'cursor-grabbing' : canZoom ? 'cursor-grab' : 'cursor-default'
+
+  return (
+    <div ref={containerRef} className='relative h-full w-full'>
+      <canvas
+        ref={canvasRef}
+        className={`h-full w-full ${cursorClass}`}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+      />
+
+      {/* Zoom toolbar */}
+      <div className='absolute right-3 bottom-3 flex items-center gap-1 rounded-lg bg-base-300/80 p-1 backdrop-blur-sm'>
+        <button
+          className='btn btn-ghost btn-sm btn-square'
+          onClick={handleZoomOut}
+          title='Zoom out'>
+          <svg
+            xmlns='http://www.w3.org/2000/svg'
+            viewBox='0 0 20 20'
+            fill='currentColor'
+            className='h-5 w-5'>
+            <path d='M4 10a.75.75 0 0 1 .75-.75h10.5a.75.75 0 0 1 0 1.5H4.75A.75.75 0 0 1 4 10Z' />
+          </svg>
+        </button>
+
+        <span className='min-w-12 text-center font-mono text-sm text-base-content/70'>
+          {Math.round(getActualImageScale())}%
+        </span>
+
+        <button className='btn btn-ghost btn-sm btn-square' onClick={handleZoomIn} title='Zoom in'>
+          <svg
+            xmlns='http://www.w3.org/2000/svg'
+            viewBox='0 0 20 20'
+            fill='currentColor'
+            className='h-5 w-5'>
+            <path d='M10.75 4.75a.75.75 0 0 0-1.5 0v4.5h-4.5a.75.75 0 0 0 0 1.5h4.5v4.5a.75.75 0 0 0 1.5 0v-4.5h4.5a.75.75 0 0 0 0-1.5h-4.5v-4.5Z' />
+          </svg>
+        </button>
+
+        <div className='mx-1 h-4 w-px bg-base-content/20' />
+
+        <button
+          className='btn btn-ghost btn-sm btn-square'
+          onClick={handleFitToWindow}
+          title='Fit to window'>
+          <svg
+            xmlns='http://www.w3.org/2000/svg'
+            viewBox='0 0 20 20'
+            fill='currentColor'
+            className='h-5 w-5'>
+            <path d='M13.28 7.78l3.22-3.22v2.69a.75.75 0 0 0 1.5 0v-4.5a.75.75 0 0 0-.75-.75h-4.5a.75.75 0 0 0 0 1.5h2.69l-3.22 3.22a.75.75 0 0 0 1.06 1.06ZM2 12.25v4.5c0 .414.336.75.75.75h4.5a.75.75 0 0 0 0-1.5H4.56l3.22-3.22a.75.75 0 0 0-1.06-1.06L3.5 14.94v-2.69a.75.75 0 0 0-1.5 0Z' />
+          </svg>
+        </button>
+      </div>
+    </div>
+  )
 }
 
 function EffectSection({
