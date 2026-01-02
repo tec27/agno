@@ -294,10 +294,26 @@ function WebGpuCanvas({
     return { zoom: clampedZoom, centerX: newCenterX, centerY: newCenterY }
   }
 
+  // Calculate aspect ratio scale factors (matches shader logic)
+  function getAspectScaleFactors(): { scaleX: number; scaleY: number } {
+    if (!containerSize) return { scaleX: 1, scaleY: 1 }
+
+    const aspectCanvas = containerSize.width / containerSize.height
+    const aspectImage = image.width / image.height
+
+    if (aspectImage > aspectCanvas) {
+      // Image is wider than canvas - letterbox (black bars top/bottom)
+      return { scaleX: 1, scaleY: aspectImage / aspectCanvas }
+    } else {
+      // Image is taller than canvas - pillarbox (black bars left/right)
+      return { scaleX: aspectCanvas / aspectImage, scaleY: 1 }
+    }
+  }
+
   // Handle scroll-to-zoom (added via useEffect to use { passive: false })
   useEffect(() => {
     const canvas = canvasRef.current
-    if (!canvas) return
+    if (!canvas || !containerSize) return
 
     const handleWheel = (e: WheelEvent) => {
       e.preventDefault()
@@ -306,9 +322,18 @@ function WebGpuCanvas({
       const canvasX = (e.clientX - rect.left) / rect.width
       const canvasY = (e.clientY - rect.top) / rect.height
 
-      // Convert canvas coords to image coords using current view
-      const imageX = (canvasX - 0.5) / viewState.zoom + viewState.centerX
-      const imageY = (canvasY - 0.5) / viewState.zoom + viewState.centerY
+      // Calculate aspect ratio correction inline (matches shader logic)
+      const aspectCanvas = containerSize.width / containerSize.height
+      const aspectImage = image.width / image.height
+      const scaleX = aspectImage > aspectCanvas ? 1 : aspectCanvas / aspectImage
+      const scaleY = aspectImage > aspectCanvas ? aspectImage / aspectCanvas : 1
+
+      const correctedX = (canvasX - 0.5) * scaleX + 0.5
+      const correctedY = (canvasY - 0.5) * scaleY + 0.5
+
+      // Convert to image coords using current view
+      const imageX = (correctedX - 0.5) / viewState.zoom + viewState.centerX
+      const imageY = (correctedY - 0.5) / viewState.zoom + viewState.centerY
 
       // Determine zoom direction
       const zoomIn = e.deltaY < 0
@@ -324,7 +349,7 @@ function WebGpuCanvas({
     return () => {
       canvas.removeEventListener('wheel', handleWheel)
     }
-  }, [viewState])
+  }, [viewState, containerSize, image.width, image.height])
 
   // Handle drag start
   function handleMouseDown(e: React.MouseEvent<HTMLCanvasElement>) {
@@ -348,9 +373,14 @@ function WebGpuCanvas({
 
     const rect = canvas.getBoundingClientRect()
 
-    // Calculate drag delta in image-space units
-    const deltaX = (e.clientX - dragStartRef.current.x) / rect.width / viewState.zoom
-    const deltaY = (e.clientY - dragStartRef.current.y) / rect.height / viewState.zoom
+    // Calculate drag delta in normalized canvas units
+    const rawDeltaX = (e.clientX - dragStartRef.current.x) / rect.width
+    const rawDeltaY = (e.clientY - dragStartRef.current.y) / rect.height
+
+    // Apply aspect ratio correction and zoom to get image-space delta
+    const { scaleX, scaleY } = getAspectScaleFactors()
+    const deltaX = (rawDeltaX * scaleX) / viewState.zoom
+    const deltaY = (rawDeltaY * scaleY) / viewState.zoom
 
     setViewState({
       zoom: viewState.zoom,
@@ -396,6 +426,34 @@ function WebGpuCanvas({
 
   function handleFitToWindow() {
     setViewState(DEFAULT_VIEW_STATE)
+  }
+
+  function handleActualSize() {
+    if (!containerSize) return
+
+    const imageAspect = image.width / image.height
+    const canvasAspect = containerSize.width / containerSize.height
+
+    // Calculate the base scale at zoom=1 (fit to window)
+    let baseScale: number
+    if (imageAspect > canvasAspect) {
+      baseScale = containerSize.width / image.width
+    } else {
+      baseScale = containerSize.height / image.height
+    }
+
+    // To show 100% native pixels, we need zoom = 1 / baseScale
+    const targetZoom = 1 / baseScale
+    setViewState(
+      zoomToward(
+        targetZoom,
+        viewState.centerX,
+        viewState.centerY,
+        viewState.zoom,
+        viewState.centerX,
+        viewState.centerY,
+      ),
+    )
   }
 
   // Calculate actual image scale (percentage of native image size)
@@ -584,6 +642,13 @@ function WebGpuCanvas({
             className='h-5 w-5'>
             <path d='M13.28 7.78l3.22-3.22v2.69a.75.75 0 0 0 1.5 0v-4.5a.75.75 0 0 0-.75-.75h-4.5a.75.75 0 0 0 0 1.5h2.69l-3.22 3.22a.75.75 0 0 0 1.06 1.06ZM2 12.25v4.5c0 .414.336.75.75.75h4.5a.75.75 0 0 0 0-1.5H4.56l3.22-3.22a.75.75 0 0 0-1.06-1.06L3.5 14.94v-2.69a.75.75 0 0 0-1.5 0Z' />
           </svg>
+        </button>
+
+        <button
+          className='btn btn-ghost btn-sm px-2 font-mono text-xs font-normal text-base-content/70'
+          onClick={handleActualSize}
+          title='Actual size'>
+          1:1
         </button>
       </div>
     </div>
