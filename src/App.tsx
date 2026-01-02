@@ -3,18 +3,22 @@ import { configureCanvasContext } from './gpu/context'
 import { Renderer } from './gpu/Renderer'
 import { useWebGpu } from './gpu/useWebGpu'
 
-// Parameter defaults matching IMPLEMENTATION_PLAN.md
 const DEFAULT_PARAMS = {
-  strength: 0.5,
+  grainEnabled: true,
+  grainStrength: 0.5,
   grainSize: 2.0,
-  saturation: 0.7,
-  toe: 0.0,
-  midtoneBias: 1.0,
-  halationStrength: 0.0,
+  grainSaturation: 0.7,
+
+  filmEnabled: true,
+  filmToe: 0.0,
+  filmMidtoneBias: 1.0,
+
+  halationEnabled: false,
+  halationStrength: 0.3,
   halationThreshold: 0.8,
 }
 
-export type GrainParams = typeof DEFAULT_PARAMS
+export type EffectParams = typeof DEFAULT_PARAMS
 
 export default function App() {
   const [params, setParams] = useState(DEFAULT_PARAMS)
@@ -53,97 +57,106 @@ export default function App() {
 
   return (
     <div className='bg-base-100 text-base-content flex h-screen flex-col'>
-      <header className='border-base-300 shrink-0 border-b px-6 py-4'>
-        <h1 className='text-xl font-semibold'>agno</h1>
+      <header className='border-base-300 shrink-0 px-6 py-3'>
+        <h1 className='text-3xl font-semibold'>agno</h1>
       </header>
 
-      <main className='flex min-h-0 flex-1 gap-6 p-6'>
+      <main className='flex min-h-0 flex-1 gap-4 pt-2 pb-6 pr-6 pl-2'>
         {/* Controls Panel */}
-        <aside className='w-72 shrink-0 space-y-6 overflow-y-auto'>
-          <button className='btn btn-primary w-full' onClick={() => fileInputRef.current?.click()}>
+        <aside className='w-72 shrink-0 space-y-3 overflow-y-auto'>
+          <button
+            className='btn btn-primary mx-4 w-[calc(100%-2rem)]'
+            onClick={() => fileInputRef.current?.click()}>
             {image ? 'change image' : 'upload image'}
           </button>
 
-          <section>
-            <h2 className='text-base-content/80 mb-3 text-sm font-medium'>grain</h2>
-            <div className='space-y-4'>
-              <SliderControl
-                label='strength'
-                value={params.strength}
-                min={0}
-                max={10}
-                onChange={v => {
-                  setParams(p => ({ ...p, strength: v }))
-                }}
-              />
-              <SliderControl
-                label='size'
-                value={params.grainSize}
-                min={0.5}
-                max={4}
-                onChange={v => {
-                  setParams(p => ({ ...p, grainSize: v }))
-                }}
-              />
-              <SliderControl
-                label='saturation'
-                value={params.saturation}
-                min={0}
-                max={2}
-                onChange={v => {
-                  setParams(p => ({ ...p, saturation: v }))
-                }}
-              />
-            </div>
-          </section>
+          <EffectSection
+            label='grain'
+            enabled={params.grainEnabled}
+            onToggle={v => {
+              setParams(p => ({ ...p, grainEnabled: v }))
+            }}>
+            <SliderControl
+              label='strength'
+              value={params.grainStrength}
+              min={0}
+              max={10}
+              onChange={v => {
+                setParams(p => ({ ...p, grainStrength: v }))
+              }}
+            />
+            <SliderControl
+              label='size'
+              value={params.grainSize}
+              min={0.5}
+              max={4}
+              onChange={v => {
+                setParams(p => ({ ...p, grainSize: v }))
+              }}
+            />
+            <SliderControl
+              label='saturation'
+              value={params.grainSaturation}
+              min={0}
+              max={2}
+              onChange={v => {
+                setParams(p => ({ ...p, grainSaturation: v }))
+              }}
+            />
+          </EffectSection>
 
-          <section>
-            <h2 className='text-base-content/80 mb-3 text-sm font-medium'>film</h2>
-            <div className='space-y-4'>
-              <SliderControl
-                label='toe'
-                value={params.toe}
-                min={-0.2}
-                max={0.5}
-                onChange={v => {
-                  setParams(p => ({ ...p, toe: v }))
-                }}
-              />
-              <SliderControl
-                label='midtone bias'
-                value={params.midtoneBias}
-                min={0}
-                max={2}
-                onChange={v => {
-                  setParams(p => ({ ...p, midtoneBias: v }))
-                }}
-              />
-            </div>
-          </section>
+          <EffectSection
+            label='film'
+            enabled={params.filmEnabled}
+            onToggle={v => {
+              setParams(p => ({ ...p, filmEnabled: v }))
+            }}>
+            <SliderControl
+              label='toe'
+              value={params.filmToe}
+              min={-0.2}
+              max={0.5}
+              precision={3}
+              onChange={v => {
+                setParams(p => ({ ...p, filmToe: v }))
+              }}
+            />
+            <SliderControl
+              label='midtone bias'
+              value={params.filmMidtoneBias}
+              min={0}
+              max={2}
+              onChange={v => {
+                setParams(p => ({ ...p, filmMidtoneBias: v }))
+              }}
+            />
+          </EffectSection>
 
-          <section>
-            <h2 className='text-base-content/80 mb-3 text-sm font-medium'>halation</h2>
-            <div className='space-y-4'>
-              <SliderControl
-                label='strength'
-                value={params.halationStrength}
-                min={0}
-                max={1}
-                onChange={v => {
-                  setParams(p => ({ ...p, halationStrength: v }))
-                }}
-              />
-              <SliderControl
-                label='threshold'
-                value={params.halationThreshold}
-                min={0}
-                max={1}
-                onChange={v => {
-                  setParams(p => ({ ...p, halationThreshold: v }))
-                }}
-              />
-            </div>
-          </section>
+          <EffectSection
+            label='halation'
+            enabled={params.halationEnabled}
+            onToggle={v => {
+              setParams(p => ({ ...p, halationEnabled: v }))
+            }}>
+            <SliderControl
+              label='strength'
+              value={params.halationStrength}
+              min={0}
+              max={1}
+              onChange={v => {
+                setParams(p => ({ ...p, halationStrength: v }))
+              }}
+            />
+            <SliderControl
+              label='threshold'
+              value={params.halationThreshold}
+              min={0}
+              max={1}
+              onChange={v => {
+                setParams(p => ({ ...p, halationThreshold: v }))
+              }}
+            />
+          </EffectSection>
         </aside>
 
         {/* Preview Area */}
@@ -270,35 +283,117 @@ function WebGpuCanvas({
   return <canvas ref={canvasRef} className='max-h-full max-w-full' />
 }
 
+function EffectSection({
+  label,
+  enabled,
+  onToggle,
+  children,
+}: {
+  label: string
+  enabled: boolean
+  onToggle: (enabled: boolean) => void
+  children: React.ReactNode
+}) {
+  return (
+    <div className='card bg-base-200 border-primary/30 mx-2 border'>
+      <div className='card-body p-0'>
+        <label className='flex cursor-pointer items-center justify-between py-4 pr-3 pl-4'>
+          <span className='card-title text-base'>{label}</span>
+          <input
+            type='checkbox'
+            checked={enabled}
+            onChange={e => {
+              onToggle(e.target.checked)
+            }}
+            className='toggle toggle-primary'
+          />
+        </label>
+        {enabled && <div className='space-y-4 pb-4'>{children}</div>}
+      </div>
+    </div>
+  )
+}
+
 function SliderControl({
   label,
   value,
   min,
   max,
   onChange,
+  precision = 2,
 }: {
   label: string
   value: number
   min: number
   max: number
   onChange: (value: number) => void
+  precision?: number
 }) {
+  const [isEditing, setIsEditing] = useState(false)
+  const [editValue, setEditValue] = useState('')
+
+  const step = (max - min) / 100
+  const fineStep = Math.pow(10, -precision)
+
+  function commitEdit() {
+    const parsed = parseFloat(editValue)
+    if (!isNaN(parsed)) {
+      onChange(Math.max(min, Math.min(max, parsed)))
+    }
+    setIsEditing(false)
+  }
+
   return (
-    <div>
-      <div className='mb-1 flex justify-between text-xs'>
+    <div className='px-3'>
+      <div className='px-1 mb-1 flex justify-between text-sm'>
         <span className='text-base-content/60'>{label}</span>
-        <span className='text-base-content/40 font-mono'>{value.toFixed(2)}</span>
+        {isEditing ? (
+          <input
+            type='text'
+            autoFocus
+            value={editValue}
+            onChange={e => {
+              setEditValue(e.target.value)
+            }}
+            onBlur={commitEdit}
+            onKeyDown={e => {
+              if (e.key === 'Enter') commitEdit()
+              if (e.key === 'Escape') setIsEditing(false)
+              if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                e.preventDefault()
+                const arrowStep = e.shiftKey ? fineStep : step
+                const delta = e.key === 'ArrowUp' ? arrowStep : -arrowStep
+                const parsed = parseFloat(editValue)
+                if (!isNaN(parsed)) {
+                  const newVal = Math.max(min, Math.min(max, parsed + delta))
+                  setEditValue(newVal.toFixed(precision))
+                  onChange(newVal)
+                }
+              }
+            }}
+            className='bg-base-300 w-16 rounded px-1 text-right font-mono'
+          />
+        ) : (
+          <span
+            className='text-base-content/40 hover:text-base-content/60 cursor-pointer font-mono'
+            onClick={() => {
+              setEditValue(value.toFixed(precision))
+              setIsEditing(true)
+            }}>
+            {value.toFixed(precision)}
+          </span>
+        )}
       </div>
       <input
         type='range'
         min={min}
         max={max}
-        step={0.01}
+        step={step}
         value={value}
         onChange={e => {
           onChange(parseFloat(e.target.value))
         }}
-        className='range range-primary range-xs'
+        className='range range-primary range-sm'
       />
     </div>
   )
