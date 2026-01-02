@@ -537,8 +537,8 @@ function WebGpuCanvas({
     if (!renderer) return
 
     renderer.setBlendParams({
-      enabled: params.grainEnabled,
-      strength: params.grainStrength,
+      enabled: params.grainEnabled || params.filmEnabled,
+      strength: params.grainEnabled ? params.grainStrength : 0,
       saturation: params.grainSaturation,
       toe: params.filmEnabled ? params.filmToe : 0,
       midtoneBias: params.filmEnabled ? params.filmMidtoneBias : 1,
