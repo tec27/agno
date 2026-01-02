@@ -576,6 +576,12 @@ function WebGpuCanvas({
   // 1-8: show grain tile 0-7
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
+      // Ignore keyboard shortcuts when typing in an input
+      const target = e.target as HTMLElement
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+        return
+      }
+
       const renderer = rendererRef.current
       const canvasContext = canvasContextRef.current
       if (!renderer || !canvasContext) return
@@ -595,10 +601,10 @@ function WebGpuCanvas({
         return
       }
 
-      // 1-8: show grain tile (index 0-7)
-      if (e.key >= '1' && e.key <= '8') {
+      // 1-8: change grain tile (only if already in debug mode)
+      const currentState = renderer.getDebugState()
+      if (e.key >= '1' && e.key <= '8' && currentState.showGrainTile) {
         renderer.setDebugState({
-          showGrainTile: true,
           tileIndex: parseInt(e.key, 10) - 1,
         })
         renderer.render(canvasContext)
