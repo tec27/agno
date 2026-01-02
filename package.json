@@ -12,6 +12,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "daisyui": "^5.5.14",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
