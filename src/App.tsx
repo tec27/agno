@@ -17,6 +17,7 @@ const DEFAULT_PARAMS = {
   halationEnabled: false,
   halationStrength: 0.3,
   halationThreshold: 0.8,
+  halationRadius: 20,
 }
 
 export type EffectParams = typeof DEFAULT_PARAMS
@@ -155,6 +156,16 @@ export default function App() {
               max={1}
               onChange={v => {
                 setParams(p => ({ ...p, halationThreshold: v }))
+              }}
+            />
+            <SliderControl
+              label='radius'
+              value={params.halationRadius}
+              min={5}
+              max={100}
+              precision={0}
+              onChange={v => {
+                setParams(p => ({ ...p, halationRadius: v }))
               }}
             />
           </EffectSection>
@@ -554,6 +565,29 @@ function WebGpuCanvas({
     params.filmEnabled,
     params.filmToe,
     params.filmMidtoneBias,
+  ])
+
+  // Update halation params when halation settings change
+  useEffect(() => {
+    const renderer = rendererRef.current
+    const canvasContext = canvasContextRef.current
+    if (!renderer) return
+
+    renderer.setHalationParams({
+      enabled: params.halationEnabled,
+      strength: params.halationStrength,
+      threshold: params.halationThreshold,
+      radius: params.halationRadius,
+    })
+
+    if (canvasContext) {
+      renderer.render(canvasContext)
+    }
+  }, [
+    params.halationEnabled,
+    params.halationStrength,
+    params.halationThreshold,
+    params.halationRadius,
   ])
 
   // Upload image when it changes

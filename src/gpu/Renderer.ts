@@ -1,9 +1,12 @@
 import type { GpuContext } from './context'
 import { GrainGenerator, type GrainParams } from './GrainGenerator'
+import { HalationProcessor, type HalationParams } from './HalationProcessor'
 import blendShader from './shaders/blend.wgsl?raw'
 import showGrainTileShader from './shaders/debug/show-grain-tile.wgsl?raw'
 import fullscreenShader from './shaders/fullscreen.wgsl?raw'
 import sampleShader from './shaders/sample.wgsl?raw'
+
+export type { HalationParams } from './HalationProcessor'
 
 export interface DebugState {
   showGrainTile: boolean
@@ -55,6 +58,9 @@ export class Renderer {
     midtoneBias: 1.0,
     enabled: true,
   }
+
+  // Halation effect
+  private halationProcessor: HalationProcessor
 
   // Debug mode
   private debugPipeline: GPURenderPipeline
@@ -124,6 +130,9 @@ export class Renderer {
 
     // Initialize grain generator
     this.grainGenerator = new GrainGenerator(ctx)
+
+    // Initialize halation processor
+    this.halationProcessor = new HalationProcessor(ctx)
 
     // Blend pipeline for applying grain to image
     this.blendBindGroupLayout = this.device.createBindGroupLayout({
@@ -232,6 +241,13 @@ export class Renderer {
   }
 
   /**
+   * Set halation effect parameters
+   */
+  setHalationParams(params: Partial<HalationParams>): void {
+    this.halationProcessor.setParams(params)
+  }
+
+  /**
    * Generate grain tiles (call before render if params changed)
    */
   async updateGrain(): Promise<void> {
@@ -320,6 +336,9 @@ export class Renderer {
         GPUTextureUsage.STORAGE_BINDING |
         GPUTextureUsage.RENDER_ATTACHMENT,
     })
+
+    // Resize halation processor textures
+    this.halationProcessor.resize(image.width, image.height, mipLevelCount)
   }
 
   /**
@@ -523,6 +542,14 @@ export class Renderer {
       // Use blended output for display
       displayTexture = this.blendOutputTexture
 
+      // Apply halation if enabled
+      if (this.halationProcessor.isEnabled() && this.halationProcessor.isReady()) {
+        displayTexture = this.halationProcessor.process(
+          displayTexture,
+          this.generateMipmaps.bind(this),
+        )
+      }
+
       // Create new command encoder for render pass
       const renderEncoder = this.device.createCommandEncoder()
       const finalRenderPass = renderEncoder.beginRenderPass({
@@ -629,6 +656,7 @@ export class Renderer {
       this.blendOutputTexture.destroy()
       this.blendOutputTexture = null
     }
+    this.halationProcessor.destroy()
     this.grainGenerator.destroy()
   }
 }
