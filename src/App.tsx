@@ -33,7 +33,7 @@ export default function App() {
 
   async function handleFile(file: File) {
     if (!file.type.startsWith('image/')) {
-      setError('Please upload an image file')
+      setError('Please select an image file')
       return
     }
 
@@ -69,7 +69,7 @@ export default function App() {
           <button
             className='btn btn-primary mx-4 w-[calc(100%-2rem)]'
             onClick={() => fileInputRef.current?.click()}>
-            {image ? 'change image' : 'upload image'}
+            {image ? 'change image' : 'open image'}
           </button>
 
           <EffectSection
@@ -219,7 +219,7 @@ export default function App() {
           ) : image ? (
             <WebGpuCanvas image={image} ctx={gpu.ctx} params={params} />
           ) : (
-            <p className='text-base-content/40'>drop an image here or click to upload</p>
+            <p className='text-base-content/40'>drop an image here or click to open</p>
           )}
         </div>
       </main>
