@@ -1,5 +1,6 @@
 import type { GpuContext } from './context'
 import { GrainGenerator, type GrainParams } from './GrainGenerator'
+import blendShader from './shaders/blend.wgsl?raw'
 import showGrainTileShader from './shaders/debug/show-grain-tile.wgsl?raw'
 import fullscreenShader from './shaders/fullscreen.wgsl?raw'
 import sampleShader from './shaders/sample.wgsl?raw'
@@ -13,6 +14,14 @@ export interface ViewState {
   zoom: number // 1.0 = fit, >1 = zoom in
   centerX: number // 0.5 = centered
   centerY: number
+}
+
+export interface BlendParams {
+  strength: number // 0-5
+  saturation: number // 0-2
+  toe: number // -0.2-0.5
+  midtoneBias: number // 0-2
+  enabled: boolean
 }
 
 export class Renderer {
@@ -33,6 +42,19 @@ export class Renderer {
   // Grain generation
   private grainGenerator: GrainGenerator
   private grainParams: GrainParams | null = null
+
+  // Grain blend effect
+  private blendPipeline: GPUComputePipeline
+  private blendBindGroupLayout: GPUBindGroupLayout
+  private blendUniformBuffer: GPUBuffer
+  private blendOutputTexture: GPUTexture | null = null
+  private blendParams: BlendParams = {
+    strength: 0.5,
+    saturation: 0.7,
+    toe: 0.0,
+    midtoneBias: 1.0,
+    enabled: true,
+  }
 
   // Debug mode
   private debugPipeline: GPURenderPipeline
@@ -103,6 +125,53 @@ export class Renderer {
     // Initialize grain generator
     this.grainGenerator = new GrainGenerator(ctx)
 
+    // Blend pipeline for applying grain to image
+    this.blendBindGroupLayout = this.device.createBindGroupLayout({
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.COMPUTE,
+          texture: { sampleType: 'float' }, // input image
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.COMPUTE,
+          texture: { sampleType: 'float', viewDimension: '2d-array' }, // grain tiles
+        },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.COMPUTE,
+          sampler: { type: 'filtering' }, // grain sampler
+        },
+        {
+          binding: 3,
+          visibility: GPUShaderStage.COMPUTE,
+          storageTexture: { access: 'write-only', format: 'rgba8unorm' }, // output
+        },
+        {
+          binding: 4,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: 'uniform' }, // blend params
+        },
+      ],
+    })
+
+    this.blendPipeline = this.device.createComputePipeline({
+      layout: this.device.createPipelineLayout({
+        bindGroupLayouts: [this.blendBindGroupLayout],
+      }),
+      compute: {
+        module: this.device.createShaderModule({ code: blendShader }),
+        entryPoint: 'main',
+      },
+    })
+
+    // BlendParams: 8 floats (strength, saturation, toe, midtone_bias, tile_size, width, height, seed)
+    this.blendUniformBuffer = this.device.createBuffer({
+      size: 32,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    })
+
     // Debug pipeline for visualizing grain tiles
     this.debugBindGroupLayout = this.device.createBindGroupLayout({
       entries: [
@@ -156,6 +225,13 @@ export class Renderer {
   }
 
   /**
+   * Set grain blend parameters
+   */
+  setBlendParams(params: Partial<BlendParams>): void {
+    this.blendParams = { ...this.blendParams, ...params }
+  }
+
+  /**
    * Generate grain tiles (call before render if params changed)
    */
   async updateGrain(): Promise<void> {
@@ -196,9 +272,12 @@ export class Renderer {
    * Upload an ImageBitmap to GPU texture with mipmaps for quality downscaling
    */
   uploadImage(image: ImageBitmap): void {
-    // Clean up old texture
+    // Clean up old textures
     if (this.imageTexture) {
       this.imageTexture.destroy()
+    }
+    if (this.blendOutputTexture) {
+      this.blendOutputTexture.destroy()
     }
 
     // Store dimensions for aspect ratio calculations
@@ -230,6 +309,17 @@ export class Renderer {
 
     // Generate mipmaps using the GPU
     this.generateMipmaps(this.imageTexture)
+
+    // Create blend output texture (same size as input, with mipmaps for display)
+    this.blendOutputTexture = this.device.createTexture({
+      size: { width: image.width, height: image.height },
+      format: 'rgba8unorm',
+      mipLevelCount,
+      usage:
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.STORAGE_BINDING |
+        GPUTextureUsage.RENDER_ATTACHMENT,
+    })
   }
 
   /**
@@ -369,6 +459,124 @@ export class Renderer {
       return
     }
 
+    // Determine which texture to display
+    let displayTexture = this.imageTexture
+
+    // Apply grain blend if enabled and we have grain tiles and output texture
+    const grainTiles = this.grainGenerator.getTileArray()
+    if (this.blendParams.enabled && grainTiles && this.blendOutputTexture && this.grainParams) {
+      // End the render pass temporarily to run compute shader
+      renderPass.end()
+
+      // Update blend uniform buffer
+      // grain_size is passed directly - shader uses it to scale sampling coordinates
+      this.device.queue.writeBuffer(
+        this.blendUniformBuffer,
+        0,
+        new Float32Array([
+          this.blendParams.strength,
+          this.blendParams.saturation,
+          this.blendParams.toe,
+          this.blendParams.midtoneBias,
+          this.grainParams.grainSize,
+          this.imageWidth,
+          this.imageHeight,
+        ]),
+      )
+      this.device.queue.writeBuffer(
+        this.blendUniformBuffer,
+        28,
+        new Uint32Array([this.grainParams.seed]),
+      )
+
+      // Create blend bind group
+      const blendBindGroup = this.device.createBindGroup({
+        layout: this.blendBindGroupLayout,
+        entries: [
+          { binding: 0, resource: this.imageTexture.createView() },
+          { binding: 1, resource: grainTiles.createView({ dimension: '2d-array' }) },
+          { binding: 2, resource: this.sampler },
+          {
+            binding: 3,
+            resource: this.blendOutputTexture.createView({ baseMipLevel: 0, mipLevelCount: 1 }),
+          },
+          { binding: 4, resource: { buffer: this.blendUniformBuffer } },
+        ],
+      })
+
+      // Run blend compute shader
+      const blendPass = commandEncoder.beginComputePass()
+      blendPass.setPipeline(this.blendPipeline)
+      blendPass.setBindGroup(0, blendBindGroup)
+      blendPass.dispatchWorkgroups(
+        Math.ceil(this.imageWidth / 16),
+        Math.ceil(this.imageHeight / 16),
+      )
+      blendPass.end()
+
+      // Submit blend work
+      this.device.queue.submit([commandEncoder.finish()])
+
+      // Generate mipmaps for the blended output
+      this.generateMipmaps(this.blendOutputTexture)
+
+      // Use blended output for display
+      displayTexture = this.blendOutputTexture
+
+      // Create new command encoder for render pass
+      const renderEncoder = this.device.createCommandEncoder()
+      const finalRenderPass = renderEncoder.beginRenderPass({
+        colorAttachments: [
+          {
+            view: context.getCurrentTexture().createView(),
+            clearValue: { r: 0.1, g: 0.1, b: 0.1, a: 1 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          },
+        ],
+      })
+
+      // Get canvas dimensions for aspect ratio
+      const canvasTexture = context.getCurrentTexture()
+      const canvasWidth = canvasTexture.width
+      const canvasHeight = canvasTexture.height
+
+      // Update view uniform buffer
+      this.device.queue.writeBuffer(
+        this.viewUniformBuffer,
+        0,
+        new Float32Array([
+          this.viewState.zoom,
+          this.viewState.centerX,
+          this.viewState.centerY,
+          canvasWidth / canvasHeight,
+          this.imageWidth / this.imageHeight,
+          0,
+          0,
+          0,
+        ]),
+      )
+
+      // Create bind group with blended texture
+      const bindGroup = this.device.createBindGroup({
+        layout: this.bindGroupLayout,
+        entries: [
+          { binding: 0, resource: displayTexture.createView() },
+          { binding: 1, resource: this.sampler },
+          { binding: 2, resource: { buffer: this.viewUniformBuffer } },
+        ],
+      })
+
+      finalRenderPass.setPipeline(this.pipeline)
+      finalRenderPass.setBindGroup(0, bindGroup)
+      finalRenderPass.draw(3)
+      finalRenderPass.end()
+
+      this.device.queue.submit([renderEncoder.finish()])
+      return
+    }
+
+    // No grain blend - show original image
     // Get canvas dimensions for aspect ratio
     const canvasTexture = context.getCurrentTexture()
     const canvasWidth = canvasTexture.width
@@ -395,7 +603,7 @@ export class Renderer {
     const bindGroup = this.device.createBindGroup({
       layout: this.bindGroupLayout,
       entries: [
-        { binding: 0, resource: this.imageTexture.createView() },
+        { binding: 0, resource: displayTexture.createView() },
         { binding: 1, resource: this.sampler },
         { binding: 2, resource: { buffer: this.viewUniformBuffer } },
       ],
@@ -416,6 +624,10 @@ export class Renderer {
     if (this.imageTexture) {
       this.imageTexture.destroy()
       this.imageTexture = null
+    }
+    if (this.blendOutputTexture) {
+      this.blendOutputTexture.destroy()
+      this.blendOutputTexture = null
     }
     this.grainGenerator.destroy()
   }

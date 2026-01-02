@@ -30,11 +30,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         var sample_pos = vec2i(gid.xy);
 
         if (params.direction == 0u) {
-            // Horizontal blur
-            sample_pos.x = clamp(sample_pos.x + i, 0, i32(dims.x) - 1);
+            // Horizontal blur with wrapping for seamless tiles
+            sample_pos.x = ((sample_pos.x + i) % i32(dims.x) + i32(dims.x)) % i32(dims.x);
         } else {
-            // Vertical blur
-            sample_pos.y = clamp(sample_pos.y + i, 0, i32(dims.y) - 1);
+            // Vertical blur with wrapping for seamless tiles
+            sample_pos.y = ((sample_pos.y + i) % i32(dims.y) + i32(dims.y)) % i32(dims.y);
         }
 
         let w = exp(-f32(i * i) / sigma2);

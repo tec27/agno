@@ -7,7 +7,7 @@ import { useObservedDimensions } from './hooks/useObservedDimensions'
 const DEFAULT_PARAMS = {
   grainEnabled: true,
   grainStrength: 0.5,
-  grainSize: 2.0,
+  grainSize: 1.0,
   grainSaturation: 0.7,
 
   filmEnabled: true,
@@ -89,7 +89,7 @@ export default function App() {
             <SliderControl
               label='size'
               value={params.grainSize}
-              min={0.5}
+              min={0.25}
               max={4}
               onChange={v => {
                 setParams(p => ({ ...p, grainSize: v }))
@@ -529,6 +529,32 @@ function WebGpuCanvas({
       clearTimeout(timeoutId)
     }
   }, [params.grainSize])
+
+  // Update blend params when effect settings change
+  useEffect(() => {
+    const renderer = rendererRef.current
+    const canvasContext = canvasContextRef.current
+    if (!renderer) return
+
+    renderer.setBlendParams({
+      enabled: params.grainEnabled,
+      strength: params.grainStrength,
+      saturation: params.grainSaturation,
+      toe: params.filmEnabled ? params.filmToe : 0,
+      midtoneBias: params.filmEnabled ? params.filmMidtoneBias : 1,
+    })
+
+    if (canvasContext) {
+      renderer.render(canvasContext)
+    }
+  }, [
+    params.grainEnabled,
+    params.grainStrength,
+    params.grainSaturation,
+    params.filmEnabled,
+    params.filmToe,
+    params.filmMidtoneBias,
+  ])
 
   // Upload image when it changes
   useEffect(() => {

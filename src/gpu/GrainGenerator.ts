@@ -17,22 +17,19 @@ const TILE_COUNT = 8
 const BASE_TILE_SIZE = 256
 
 /**
- * Calculate blur specs for a given tile size.
- * Kernel sizes scale with tile size to maintain consistent visual grain size.
- * Based on original: cb_kernel = min(15, max(3, tile_size // 20))
- *                    cr_kernel = min(11, max(3, tile_size // 25))
+ * Get blur specs for grain processing.
+ * Fixed kernel sizes for consistent grain character.
+ * grainSize is handled at sampling time, not generation time.
  */
-function getBlurSpecs(tileSize: number): { kernelRadius: number; sigma: number }[] {
-  // Y channel: fixed fine grain (3x3, sigma=0.8)
+function getBlurSpecs(): { kernelRadius: number; sigma: number }[] {
+  // Y channel: fine luminance grain (3x3, sigma=0.8)
   const ySpec = { kernelRadius: 1, sigma: 0.8 }
 
-  // Cb channel: scales with tile size, max 15x15
-  const cbKernel = Math.min(15, Math.max(3, Math.floor(tileSize / 20) | 1))
-  const cbSpec = { kernelRadius: Math.floor(cbKernel / 2), sigma: cbKernel / 4.0 }
+  // Cb channel: smooth blue-yellow (15x15, sigma=3.75)
+  const cbSpec = { kernelRadius: 7, sigma: 3.75 }
 
-  // Cr channel: scales with tile size, max 11x11
-  const crKernel = Math.min(11, Math.max(3, Math.floor(tileSize / 25) | 1))
-  const crSpec = { kernelRadius: Math.floor(crKernel / 2), sigma: crKernel / 4.0 }
+  // Cr channel: smooth red-green (11x11, sigma=2.75)
+  const crSpec = { kernelRadius: 5, sigma: 2.75 }
 
   return [ySpec, cbSpec, crSpec]
 }
@@ -242,16 +239,13 @@ export class GrainGenerator {
 
   /**
    * Check if current tiles are still valid for given params
+   * Note: grainSize is NOT checked - it only affects sampling, not tile generation
    */
   private tilesValid(params: GrainParams): boolean {
     if (!this.grainTileArray || !this.lastParams) {
       return false
     }
-    return (
-      this.lastParams.seed === params.seed &&
-      this.lastParams.grainSize === params.grainSize &&
-      this.lastParams.arLag === params.arLag
-    )
+    return this.lastParams.seed === params.seed && this.lastParams.arLag === params.arLag
   }
 
   /**
@@ -289,6 +283,7 @@ export class GrainGenerator {
 
   /**
    * Generate all 8 grain tiles
+   * Tiles are always 256x256 - grainSize only affects sampling in blend shader
    */
   async generateTiles(params: GrainParams): Promise<GPUTexture> {
     // Check cache
@@ -296,7 +291,7 @@ export class GrainGenerator {
       return this.grainTileArray
     }
 
-    const tileSize = Math.round(BASE_TILE_SIZE * params.grainSize)
+    const tileSize = BASE_TILE_SIZE // Always 256x256
     this.ensureTextures(tileSize)
 
     // After ensureTextures, these are guaranteed to exist
@@ -399,7 +394,7 @@ export class GrainGenerator {
     let currentOutput = workTexture2
 
     // Get blur specs scaled for this tile size
-    const blurSpecs = getBlurSpecs(tileSize)
+    const blurSpecs = getBlurSpecs()
 
     for (let channel = 0; channel < 3; channel++) {
       const spec = blurSpecs[channel]

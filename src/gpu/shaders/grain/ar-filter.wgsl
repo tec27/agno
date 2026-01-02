@@ -43,13 +43,15 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var sum = vec3f(0.0);
     var weight_sum = 0.0;
 
-    // Compute weighted sum of causal neighbors
+    // Compute weighted sum of causal neighbors with wrapping for seamless tiles
+    let w_i32 = i32(dims.x);
+    let h_i32 = i32(dims.y);
     for (var dy = -ar_lag; dy <= ar_lag; dy++) {
         for (var dx = -ar_lag; dx <= ar_lag; dx++) {
             let w = get_ar_weight(dx, dy, ar_lag);
             if (w > 0.0) {
-                let sx = clamp(i32(gid.x) + dx, 0, i32(dims.x) - 1);
-                let sy = clamp(i32(gid.y) + dy, 0, i32(dims.y) - 1);
+                let sx = ((i32(gid.x) + dx) % w_i32 + w_i32) % w_i32;
+                let sy = ((i32(gid.y) + dy) % h_i32 + h_i32) % h_i32;
                 sum += textureLoad(input_tex, vec2u(u32(sx), u32(sy)), 0).rgb * w;
                 weight_sum += w;
             }
