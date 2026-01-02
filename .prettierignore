@@ -1,0 +1,14 @@
+# Dependencies
+node_modules
+
+# Build output
+dist
+.vite
+
+# Lock files
+pnpm-lock.yaml
+package-lock.json
+
+# Misc
+*.log
+.DS_Store
