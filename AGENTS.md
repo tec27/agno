@@ -43,3 +43,16 @@ pnpm format   # Prettier
 - WebGPU types augment `navigator.gpu` as optional (not all browsers support it)
 - DaisyUI provides component classes (`btn`, `range`, etc.) - check https://daisyui.com/components/
 - Prefer semantic colors (`base-100`, `primary`, `base-content`) over raw Tailwind colors
+
+## React Compiler
+
+This project uses **React Compiler** (babel-plugin-react-compiler). The compiler automatically memoizes components and values, so:
+
+- **Do NOT use** `useCallback`, `useMemo`, or `React.memo` manually
+- Write plain functions and values inline - the compiler handles optimization
+- Avoid `useRef` for memoization hacks - just write straightforward code
+- Event handlers can be defined inline without performance concerns
+
+## Async/Await
+
+- Handle errors from async operations (that return `Promise`s), DON'T simply `void` the result to silence the lint errors
