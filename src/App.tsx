@@ -80,7 +80,7 @@ export default function App() {
               label='strength'
               value={params.grainStrength}
               min={0}
-              max={10}
+              max={5}
               onChange={v => {
                 setParams(p => ({ ...p, grainStrength: v }))
               }}
@@ -205,7 +205,7 @@ export default function App() {
           {gpu.status === 'loading' ? (
             <p className='text-base-content/40'>Initializing WebGPU...</p>
           ) : image ? (
-            <WebGpuCanvas image={image} ctx={gpu.ctx} />
+            <WebGpuCanvas image={image} ctx={gpu.ctx} params={params} />
           ) : (
             <p className='text-base-content/40'>drop an image here or click to upload</p>
           )}
@@ -218,9 +218,11 @@ export default function App() {
 function WebGpuCanvas({
   image,
   ctx,
+  params,
 }: {
   image: ImageBitmap
   ctx: import('./gpu/context').GpuContext
+  params: EffectParams
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const rendererRef = useRef<Renderer | null>(null)
@@ -235,40 +237,73 @@ function WebGpuCanvas({
     }
   }, [ctx])
 
-  // Configure canvas context and handle resize
+  // Configure canvas to fill container, handle resize
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
 
-    // Size canvas to match image while fitting in container
     const container = canvas.parentElement
     if (!container) return
 
-    const containerWidth = container.clientWidth
-    const containerHeight = container.clientHeight
-    const imageAspect = image.width / image.height
-    const containerAspect = containerWidth / containerHeight
+    // Size canvas to fill container (shader handles aspect ratio)
+    const updateSize = () => {
+      const containerWidth = container.clientWidth
+      const containerHeight = container.clientHeight
 
-    let canvasWidth: number
-    let canvasHeight: number
+      canvas.width = Math.round(containerWidth * window.devicePixelRatio)
+      canvas.height = Math.round(containerHeight * window.devicePixelRatio)
+      canvas.style.width = `${String(containerWidth)}px`
+      canvas.style.height = `${String(containerHeight)}px`
 
-    if (imageAspect > containerAspect) {
-      // Image is wider than container
-      canvasWidth = containerWidth
-      canvasHeight = containerWidth / imageAspect
-    } else {
-      // Image is taller than container
-      canvasHeight = containerHeight
-      canvasWidth = containerHeight * imageAspect
+      const canvasContext = configureCanvasContext(canvas, ctx)
+      canvasContextRef.current = canvasContext
+
+      // Re-render after resize
+      const renderer = rendererRef.current
+      if (renderer) {
+        renderer.render(canvasContext)
+      }
     }
 
-    canvas.width = Math.round(canvasWidth * window.devicePixelRatio)
-    canvas.height = Math.round(canvasHeight * window.devicePixelRatio)
-    canvas.style.width = `${String(canvasWidth)}px`
-    canvas.style.height = `${String(canvasHeight)}px`
+    updateSize()
 
-    canvasContextRef.current = configureCanvasContext(canvas, ctx)
-  }, [ctx, image.width, image.height])
+    // Handle window resize
+    const resizeObserver = new ResizeObserver(updateSize)
+    resizeObserver.observe(container)
+
+    return () => {
+      resizeObserver.disconnect()
+    }
+  }, [ctx])
+
+  // Update grain params and regenerate tiles when grain settings change (debounced)
+  useEffect(() => {
+    const renderer = rendererRef.current
+    const canvasContext = canvasContextRef.current
+    if (!renderer) return
+
+    renderer.setGrainParams({
+      seed: 0, // TODO: add seed UI control
+      grainSize: params.grainSize,
+      arLag: 2,
+    })
+
+    // Debounce tile generation to avoid overwhelming the GPU while dragging
+    const timeoutId = setTimeout(() => {
+      renderer
+        .updateGrain()
+        .then(() => {
+          if (canvasContext) {
+            renderer.render(canvasContext)
+          }
+        })
+        .catch(console.error)
+    }, 60)
+
+    return () => {
+      clearTimeout(timeoutId)
+    }
+  }, [params.grainSize])
 
   // Upload image and render
   useEffect(() => {
@@ -279,6 +314,47 @@ function WebGpuCanvas({
     renderer.uploadImage(image)
     renderer.render(canvasContext)
   }, [image])
+
+  // Debug mode keyboard shortcuts (secret!)
+  // Shift+D: toggle debug mode
+  // 0: turn off debug view (show image)
+  // 1-8: show grain tile 0-7
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      const renderer = rendererRef.current
+      const canvasContext = canvasContextRef.current
+      if (!renderer || !canvasContext) return
+
+      // Shift+D: toggle debug mode
+      if (e.key === 'D' && e.shiftKey) {
+        const currentState = renderer.getDebugState()
+        renderer.setDebugState({ showGrainTile: !currentState.showGrainTile })
+        renderer.render(canvasContext)
+        return
+      }
+
+      // 0: turn off debug mode
+      if (e.key === '0') {
+        renderer.setDebugState({ showGrainTile: false })
+        renderer.render(canvasContext)
+        return
+      }
+
+      // 1-8: show grain tile (index 0-7)
+      if (e.key >= '1' && e.key <= '8') {
+        renderer.setDebugState({
+          showGrainTile: true,
+          tileIndex: parseInt(e.key, 10) - 1,
+        })
+        renderer.render(canvasContext)
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [])
 
   return <canvas ref={canvasRef} className='max-h-full max-w-full' />
 }
