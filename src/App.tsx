@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { configureCanvasContext, type GpuContext } from './gpu/context'
+import { configureCanvasContext } from './gpu/context'
 import { Renderer } from './gpu/Renderer'
 import { useWebGpu } from './gpu/useWebGpu'
 import { useObservedDimensions } from './hooks/useObservedDimensions'
@@ -27,12 +27,69 @@ export type EffectParams = typeof DEFAULT_PARAMS
 export default function App() {
   const [params, setParams] = useState(DEFAULT_PARAMS)
   const [image, setImage] = useState<ImageBitmap | null>(null)
+  const [imageName, setImageName] = useState('')
   const [isDragging, setIsDragging] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showOriginal, setShowOriginal] = useState(false)
+  const [exportFormat, setExportFormat] = useState<'png' | 'jpeg' | 'webp'>('jpeg')
+  const [exportQuality, setExportQuality] = useState(0.95)
+  const [isExporting, setIsExporting] = useState(false)
+  const [renderer, setRenderer] = useState<Renderer | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const gpu = useWebGpu()
+
+  // Create renderer when GPU context is ready
+  useEffect(() => {
+    if (gpu.status !== 'ready') {
+      setRenderer(null)
+      return
+    }
+
+    const newRenderer = new Renderer(gpu.ctx)
+    setRenderer(newRenderer)
+
+    return () => {
+      newRenderer.destroy()
+    }
+  }, [gpu])
+
+  async function handleExport() {
+    if (!renderer || isExporting) return
+
+    setIsExporting(true)
+    try {
+      const result = await renderer.renderForExport()
+      if (!result) return
+
+      // Draw to an offscreen canvas to create the image
+      const offscreen = new OffscreenCanvas(result.width, result.height)
+      const ctx2d = offscreen.getContext('2d')
+      if (!ctx2d) return
+
+      // Create ImageData and put pixels
+      const imageData = ctx2d.createImageData(result.width, result.height)
+      imageData.data.set(result.data)
+      ctx2d.putImageData(imageData, 0, 0)
+
+      const mimeType = `image/${exportFormat}`
+      const blob = await offscreen.convertToBlob({
+        type: mimeType,
+        quality: exportFormat === 'png' ? undefined : exportQuality,
+      })
+      const url = URL.createObjectURL(blob)
+
+      // Trigger download
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${imageName || String(Date.now())}_agno.${exportFormat}`
+      a.click()
+
+      URL.revokeObjectURL(url)
+    } finally {
+      setIsExporting(false)
+    }
+  }
 
   async function handleFile(file: File) {
     if (!file.type.startsWith('image/')) {
@@ -44,6 +101,9 @@ export default function App() {
       setError(null)
       const bitmap = await createImageBitmap(file)
       setImage(bitmap)
+      // Extract base name without extension for export naming
+      const baseName = file.name.replace(/\.[^.]+$/, '')
+      setImageName(baseName)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load image')
     }
@@ -53,8 +113,8 @@ export default function App() {
   if (gpu.status === 'error') {
     return (
       <div className='bg-base-100 text-base-content flex min-h-screen items-center justify-center'>
-        <div className='alert alert-error max-w-md'>
-          <span>{gpu.error}</span>
+        <div className='alert alert-error max-w-lg'>
+          <span className='text-lg font-medium'>{gpu.error}</span>
         </div>
       </div>
     )
@@ -209,6 +269,53 @@ export default function App() {
               }}
             />
           </EffectSection>
+
+          {/* Export Section */}
+          <div className='card bg-base-200 border-primary/30 mx-2 border'>
+            <div className='card-body p-4 space-y-3'>
+              <span className='card-title text-base'>export</span>
+
+              <div className='flex gap-2'>
+                {(['png', 'jpeg', 'webp'] as const).map(fmt => (
+                  <button
+                    key={fmt}
+                    className={`btn btn-sm flex-1 ${exportFormat === fmt ? 'btn-primary' : 'btn-ghost'}`}
+                    onClick={() => {
+                      setExportFormat(fmt)
+                    }}>
+                    {fmt.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+
+              {exportFormat !== 'png' && (
+                <SliderControl
+                  label='quality'
+                  value={exportQuality}
+                  min={0.1}
+                  max={1}
+                  precision={2}
+                  onChange={setExportQuality}
+                />
+              )}
+
+              <button
+                className='btn btn-primary w-full'
+                onClick={() => {
+                  handleExport().catch(console.error)
+                }}
+                disabled={!image || isExporting}>
+                {isExporting ? (
+                  <>
+                    <span className='loading loading-spinner loading-sm' />
+                    exporting...
+                  </>
+                ) : (
+                  'export image'
+                )}
+              </button>
+            </div>
+          </div>
         </aside>
 
         {/* Preview Area */}
@@ -256,15 +363,15 @@ export default function App() {
 
           {gpu.status === 'loading' ? (
             <p className='text-base-content/40'>Initializing WebGPU...</p>
-          ) : image ? (
+          ) : image && renderer ? (
             <WebGpuCanvas
               image={image}
-              ctx={gpu.ctx}
               params={params}
               showOriginal={showOriginal}
               onToggleOriginal={() => {
                 setShowOriginal(s => !s)
               }}
+              renderer={renderer}
             />
           ) : (
             <p className='text-base-content/40'>drop an image here or click to open</p>
@@ -288,19 +395,18 @@ const ZOOM_STEP = 1.2 // Multiplier per scroll tick or button click
 
 function WebGpuCanvas({
   image,
-  ctx,
   params,
   showOriginal,
   onToggleOriginal,
+  renderer,
 }: {
   image: ImageBitmap
-  ctx: GpuContext
   params: EffectParams
   showOriginal: boolean
   onToggleOriginal: () => void
+  renderer: Renderer
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const rendererRef = useRef<Renderer | null>(null)
   const canvasContextRef = useRef<GPUCanvasContext | null>(null)
 
   // View state (zoom and pan)
@@ -315,24 +421,14 @@ function WebGpuCanvas({
     null,
   )
 
-  // Initialize renderer once
-  useEffect(() => {
-    rendererRef.current = new Renderer(ctx)
-    return () => {
-      rendererRef.current?.destroy()
-      rendererRef.current = null
-    }
-  }, [ctx])
-
   // Sync view state with renderer and trigger re-render
   useEffect(() => {
-    const renderer = rendererRef.current
     const canvasContext = canvasContextRef.current
-    if (!renderer || !canvasContext) return
+    if (!canvasContext) return
 
     renderer.setViewState(viewState)
     renderer.render(canvasContext)
-  }, [viewState])
+  }, [renderer, viewState])
 
   // Zoom toward a specific point
   function zoomToward(
@@ -554,21 +650,16 @@ function WebGpuCanvas({
     canvas.style.width = `${String(containerSize.width)}px`
     canvas.style.height = `${String(containerSize.height)}px`
 
-    const canvasContext = configureCanvasContext(canvas, ctx)
+    const canvasContext = configureCanvasContext(canvas, renderer.getContext())
     canvasContextRef.current = canvasContext
 
     // Re-render after resize
-    const renderer = rendererRef.current
-    if (renderer) {
-      renderer.render(canvasContext)
-    }
-  }, [ctx, containerSize])
+    renderer.render(canvasContext)
+  }, [renderer, containerSize])
 
   // Update grain params and regenerate tiles when grain settings change (debounced)
   useEffect(() => {
-    const renderer = rendererRef.current
     const canvasContext = canvasContextRef.current
-    if (!renderer) return
 
     renderer.setGrainParams({
       seed: params.seed,
@@ -591,13 +682,11 @@ function WebGpuCanvas({
     return () => {
       clearTimeout(timeoutId)
     }
-  }, [params.seed, params.grainSize])
+  }, [renderer, params.seed, params.grainSize])
 
   // Update blend params when effect settings change
   useEffect(() => {
-    const renderer = rendererRef.current
     const canvasContext = canvasContextRef.current
-    if (!renderer) return
 
     renderer.setBlendParams({
       enabled: !showOriginal && (params.grainEnabled || params.filmEnabled),
@@ -611,6 +700,7 @@ function WebGpuCanvas({
       renderer.render(canvasContext)
     }
   }, [
+    renderer,
     showOriginal,
     params.grainEnabled,
     params.grainStrength,
@@ -622,9 +712,7 @@ function WebGpuCanvas({
 
   // Update halation params when halation settings change
   useEffect(() => {
-    const renderer = rendererRef.current
     const canvasContext = canvasContextRef.current
-    if (!renderer) return
 
     renderer.setHalationParams({
       enabled: !showOriginal && params.halationEnabled,
@@ -637,6 +725,7 @@ function WebGpuCanvas({
       renderer.render(canvasContext)
     }
   }, [
+    renderer,
     showOriginal,
     params.halationEnabled,
     params.halationStrength,
@@ -646,9 +735,6 @@ function WebGpuCanvas({
 
   // Upload image when it changes
   useEffect(() => {
-    const renderer = rendererRef.current
-    if (!renderer) return
-
     renderer.uploadImage(image)
 
     // Trigger a render if canvas context is ready
@@ -656,7 +742,7 @@ function WebGpuCanvas({
     if (canvasContext) {
       renderer.render(canvasContext)
     }
-  }, [image])
+  }, [renderer, image])
 
   // Keyboard shortcuts
   // O: toggle original image (no effects)
@@ -684,9 +770,8 @@ function WebGpuCanvas({
         return
       }
 
-      const renderer = rendererRef.current
       const canvasContext = canvasContextRef.current
-      if (!renderer || !canvasContext) return
+      if (!canvasContext) return
 
       // Shift+D: toggle debug mode
       if (e.key === 'D' && e.shiftKey) {
@@ -717,7 +802,7 @@ function WebGpuCanvas({
     return () => {
       window.removeEventListener('keydown', handleKeyDown)
     }
-  }, [onToggleOriginal])
+  }, [renderer, onToggleOriginal])
 
   // Determine cursor style based on zoom and drag state
   const canZoom = viewState.zoom > 1.0

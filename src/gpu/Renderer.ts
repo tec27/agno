@@ -28,6 +28,7 @@ export interface BlendParams {
 }
 
 export class Renderer {
+  private ctx: GpuContext
   private device: GPUDevice
   private format: GPUTextureFormat
   private pipeline: GPURenderPipeline
@@ -69,6 +70,7 @@ export class Renderer {
   private debugState: DebugState = { showGrainTile: false, tileIndex: 0 }
 
   constructor(ctx: GpuContext) {
+    this.ctx = ctx
     this.device = ctx.device
     this.format = ctx.format
 
@@ -285,6 +287,13 @@ export class Renderer {
   }
 
   /**
+   * Get the GPU context (for canvas configuration)
+   */
+  getContext(): GpuContext {
+    return this.ctx
+  }
+
+  /**
    * Upload an ImageBitmap to GPU texture with mipmaps for quality downscaling
    */
   uploadImage(image: ImageBitmap): void {
@@ -312,6 +321,7 @@ export class Renderer {
       usage:
         GPUTextureUsage.TEXTURE_BINDING |
         GPUTextureUsage.COPY_DST |
+        GPUTextureUsage.COPY_SRC |
         GPUTextureUsage.STORAGE_BINDING |
         GPUTextureUsage.RENDER_ATTACHMENT,
     })
@@ -333,6 +343,7 @@ export class Renderer {
       mipLevelCount,
       usage:
         GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.COPY_SRC |
         GPUTextureUsage.STORAGE_BINDING |
         GPUTextureUsage.RENDER_ATTACHMENT,
     })
@@ -415,80 +426,27 @@ export class Renderer {
   }
 
   /**
-   * Render the uploaded image to the canvas
+   * Apply all effects (grain blend + halation) and return the output texture.
+   * Returns the original image texture if no effects are enabled.
+   * @param forExport - If true, ignores the 'enabled' flags and applies effects based on strength values
    */
-  render(context: GPUCanvasContext): void {
-    const commandEncoder = this.device.createCommandEncoder()
-
-    const renderPass = commandEncoder.beginRenderPass({
-      colorAttachments: [
-        {
-          view: context.getCurrentTexture().createView(),
-          clearValue: { r: 0.1, g: 0.1, b: 0.1, a: 1 },
-          loadOp: 'clear',
-          storeOp: 'store',
-        },
-      ],
-    })
-
-    // Debug mode: show grain tile
-    if (this.debugState.showGrainTile) {
-      const grainTiles = this.grainGenerator.getTileArray()
-      if (grainTiles) {
-        // Get canvas dimensions for 1:1 pixel display
-        const canvasTexture = context.getCurrentTexture()
-        const canvasWidth = canvasTexture.width
-        const canvasHeight = canvasTexture.height
-
-        // Update uniform buffer: tile_index, tile_size, canvas_width, canvas_height
-        const tileSize = this.grainParams ? Math.round(256 * this.grainParams.grainSize) : 256
-        this.device.queue.writeBuffer(
-          this.debugUniformBuffer,
-          0,
-          new Uint32Array([this.debugState.tileIndex]),
-        )
-        this.device.queue.writeBuffer(
-          this.debugUniformBuffer,
-          4,
-          new Float32Array([tileSize, canvasWidth, canvasHeight]),
-        )
-
-        const debugBindGroup = this.device.createBindGroup({
-          layout: this.debugBindGroupLayout,
-          entries: [
-            { binding: 0, resource: grainTiles.createView({ dimension: '2d-array' }) },
-            { binding: 1, resource: this.sampler },
-            { binding: 2, resource: { buffer: this.debugUniformBuffer } },
-          ],
-        })
-
-        renderPass.setPipeline(this.debugPipeline)
-        renderPass.setBindGroup(0, debugBindGroup)
-        renderPass.draw(3)
-        renderPass.end()
-        this.device.queue.submit([commandEncoder.finish()])
-        return
-      }
-    }
-
-    // Normal mode: show image
+  private renderEffects(forExport = false): GPUTexture | null {
     if (!this.imageTexture) {
-      renderPass.end()
-      this.device.queue.submit([commandEncoder.finish()])
-      return
+      return null
     }
 
-    // Determine which texture to display
-    let displayTexture = this.imageTexture
+    let outputTexture: GPUTexture = this.imageTexture
 
-    // Apply grain blend if enabled and we have grain tiles and output texture
+    // For export, apply grain/film if strength > 0; for display, check enabled flag
+    const shouldApplyBlend = forExport
+      ? this.blendParams.strength > 0 ||
+        this.blendParams.toe !== 0 ||
+        this.blendParams.midtoneBias !== 1
+      : this.blendParams.enabled
+
     const grainTiles = this.grainGenerator.getTileArray()
-    if (this.blendParams.enabled && grainTiles && this.blendOutputTexture && this.grainParams) {
-      // End the render pass temporarily to run compute shader
-      renderPass.end()
-
+    if (shouldApplyBlend && grainTiles && this.blendOutputTexture && this.grainParams) {
       // Update blend uniform buffer
-      // grain_size is passed directly - shader uses it to scale sampling coordinates
       this.device.queue.writeBuffer(
         this.blendUniformBuffer,
         0,
@@ -524,6 +482,7 @@ export class Renderer {
       })
 
       // Run blend compute shader
+      const commandEncoder = this.device.createCommandEncoder()
       const blendPass = commandEncoder.beginComputePass()
       blendPass.setPipeline(this.blendPipeline)
       blendPass.setBindGroup(0, blendBindGroup)
@@ -532,150 +491,35 @@ export class Renderer {
         Math.ceil(this.imageHeight / 16),
       )
       blendPass.end()
-
-      // Submit blend work
       this.device.queue.submit([commandEncoder.finish()])
 
       // Generate mipmaps for the blended output
       this.generateMipmaps(this.blendOutputTexture)
 
-      // Use blended output for display
-      displayTexture = this.blendOutputTexture
-
-      // Apply halation if enabled
-      if (this.halationProcessor.isEnabled() && this.halationProcessor.isReady()) {
-        displayTexture = this.halationProcessor.process(
-          displayTexture,
-          this.generateMipmaps.bind(this),
-        )
-      }
-
-      // Create new command encoder for render pass
-      const renderEncoder = this.device.createCommandEncoder()
-      const finalRenderPass = renderEncoder.beginRenderPass({
-        colorAttachments: [
-          {
-            view: context.getCurrentTexture().createView(),
-            clearValue: { r: 0.1, g: 0.1, b: 0.1, a: 1 },
-            loadOp: 'clear',
-            storeOp: 'store',
-          },
-        ],
-      })
-
-      // Get canvas dimensions for aspect ratio
-      const canvasTexture = context.getCurrentTexture()
-      const canvasWidth = canvasTexture.width
-      const canvasHeight = canvasTexture.height
-
-      // Update view uniform buffer
-      this.device.queue.writeBuffer(
-        this.viewUniformBuffer,
-        0,
-        new Float32Array([
-          this.viewState.zoom,
-          this.viewState.centerX,
-          this.viewState.centerY,
-          canvasWidth / canvasHeight,
-          this.imageWidth / this.imageHeight,
-          0,
-          0,
-          0,
-        ]),
-      )
-
-      // Create bind group with blended texture
-      const bindGroup = this.device.createBindGroup({
-        layout: this.bindGroupLayout,
-        entries: [
-          { binding: 0, resource: displayTexture.createView() },
-          { binding: 1, resource: this.sampler },
-          { binding: 2, resource: { buffer: this.viewUniformBuffer } },
-        ],
-      })
-
-      finalRenderPass.setPipeline(this.pipeline)
-      finalRenderPass.setBindGroup(0, bindGroup)
-      finalRenderPass.draw(3)
-      finalRenderPass.end()
-
-      this.device.queue.submit([renderEncoder.finish()])
-      return
+      outputTexture = this.blendOutputTexture
     }
 
-    // No grain blend - but check if halation is enabled
-    if (this.halationProcessor.isEnabled() && this.halationProcessor.isReady()) {
-      // End the render pass temporarily to run halation compute shaders
-      renderPass.end()
-      this.device.queue.submit([commandEncoder.finish()])
+    // Apply halation if enabled (for export, check if strength > 0)
+    const shouldApplyHalation = forExport
+      ? this.halationProcessor.getParams().strength > 0
+      : this.halationProcessor.isEnabled()
 
-      // Apply halation to the original image
-      displayTexture = this.halationProcessor.process(
-        displayTexture,
-        this.generateMipmaps.bind(this),
-      )
-
-      // Create new command encoder for final render pass
-      const renderEncoder = this.device.createCommandEncoder()
-      const finalRenderPass = renderEncoder.beginRenderPass({
-        colorAttachments: [
-          {
-            view: context.getCurrentTexture().createView(),
-            clearValue: { r: 0.1, g: 0.1, b: 0.1, a: 1 },
-            loadOp: 'clear',
-            storeOp: 'store',
-          },
-        ],
-      })
-
-      // Get canvas dimensions for aspect ratio
-      const canvasTexture = context.getCurrentTexture()
-      const canvasWidth = canvasTexture.width
-      const canvasHeight = canvasTexture.height
-
-      // Update view uniform buffer
-      this.device.queue.writeBuffer(
-        this.viewUniformBuffer,
-        0,
-        new Float32Array([
-          this.viewState.zoom,
-          this.viewState.centerX,
-          this.viewState.centerY,
-          canvasWidth / canvasHeight,
-          this.imageWidth / this.imageHeight,
-          0,
-          0,
-          0,
-        ]),
-      )
-
-      // Create bind group with halation output texture
-      const bindGroup = this.device.createBindGroup({
-        layout: this.bindGroupLayout,
-        entries: [
-          { binding: 0, resource: displayTexture.createView() },
-          { binding: 1, resource: this.sampler },
-          { binding: 2, resource: { buffer: this.viewUniformBuffer } },
-        ],
-      })
-
-      finalRenderPass.setPipeline(this.pipeline)
-      finalRenderPass.setBindGroup(0, bindGroup)
-      finalRenderPass.draw(3)
-      finalRenderPass.end()
-
-      this.device.queue.submit([renderEncoder.finish()])
-      return
+    if (shouldApplyHalation && this.halationProcessor.isReady()) {
+      outputTexture = this.halationProcessor.process(outputTexture, this.generateMipmaps.bind(this))
     }
 
-    // No effects - show original image
-    // Get canvas dimensions for aspect ratio
+    return outputTexture
+  }
+
+  /**
+   * Display a texture on the canvas with zoom/pan transform
+   */
+  private displayTexture(context: GPUCanvasContext, texture: GPUTexture): void {
     const canvasTexture = context.getCurrentTexture()
     const canvasWidth = canvasTexture.width
     const canvasHeight = canvasTexture.height
 
     // Update view uniform buffer
-    // ViewParams: zoom, center_x, center_y, aspect_canvas, aspect_image, padding
     this.device.queue.writeBuffer(
       this.viewUniformBuffer,
       0,
@@ -687,26 +531,179 @@ export class Renderer {
         this.imageWidth / this.imageHeight,
         0,
         0,
-        0, // padding
+        0,
       ]),
     )
 
-    // Create bind group with current texture and view params
     const bindGroup = this.device.createBindGroup({
       layout: this.bindGroupLayout,
       entries: [
-        { binding: 0, resource: displayTexture.createView() },
+        { binding: 0, resource: texture.createView() },
         { binding: 1, resource: this.sampler },
         { binding: 2, resource: { buffer: this.viewUniformBuffer } },
       ],
     })
 
+    const commandEncoder = this.device.createCommandEncoder()
+    const renderPass = commandEncoder.beginRenderPass({
+      colorAttachments: [
+        {
+          view: canvasTexture.createView(),
+          clearValue: { r: 0.1, g: 0.1, b: 0.1, a: 1 },
+          loadOp: 'clear',
+          storeOp: 'store',
+        },
+      ],
+    })
+
     renderPass.setPipeline(this.pipeline)
     renderPass.setBindGroup(0, bindGroup)
-    renderPass.draw(3) // Fullscreen triangle
+    renderPass.draw(3)
     renderPass.end()
 
     this.device.queue.submit([commandEncoder.finish()])
+  }
+
+  /**
+   * Render the uploaded image to the canvas
+   */
+  render(context: GPUCanvasContext): void {
+    // Debug mode: show grain tile
+    if (this.debugState.showGrainTile) {
+      const grainTiles = this.grainGenerator.getTileArray()
+      if (grainTiles) {
+        const canvasTexture = context.getCurrentTexture()
+        const canvasWidth = canvasTexture.width
+        const canvasHeight = canvasTexture.height
+
+        const tileSize = this.grainParams ? Math.round(256 * this.grainParams.grainSize) : 256
+        this.device.queue.writeBuffer(
+          this.debugUniformBuffer,
+          0,
+          new Uint32Array([this.debugState.tileIndex]),
+        )
+        this.device.queue.writeBuffer(
+          this.debugUniformBuffer,
+          4,
+          new Float32Array([tileSize, canvasWidth, canvasHeight]),
+        )
+
+        const debugBindGroup = this.device.createBindGroup({
+          layout: this.debugBindGroupLayout,
+          entries: [
+            { binding: 0, resource: grainTiles.createView({ dimension: '2d-array' }) },
+            { binding: 1, resource: this.sampler },
+            { binding: 2, resource: { buffer: this.debugUniformBuffer } },
+          ],
+        })
+
+        const commandEncoder = this.device.createCommandEncoder()
+        const renderPass = commandEncoder.beginRenderPass({
+          colorAttachments: [
+            {
+              view: canvasTexture.createView(),
+              clearValue: { r: 0.1, g: 0.1, b: 0.1, a: 1 },
+              loadOp: 'clear',
+              storeOp: 'store',
+            },
+          ],
+        })
+
+        renderPass.setPipeline(this.debugPipeline)
+        renderPass.setBindGroup(0, debugBindGroup)
+        renderPass.draw(3)
+        renderPass.end()
+        this.device.queue.submit([commandEncoder.finish()])
+        return
+      }
+    }
+
+    // Normal mode: apply effects and display
+    const outputTexture = this.renderEffects()
+    if (!outputTexture) {
+      // No image loaded - just clear the canvas
+      const commandEncoder = this.device.createCommandEncoder()
+      const renderPass = commandEncoder.beginRenderPass({
+        colorAttachments: [
+          {
+            view: context.getCurrentTexture().createView(),
+            clearValue: { r: 0.1, g: 0.1, b: 0.1, a: 1 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          },
+        ],
+      })
+      renderPass.end()
+      this.device.queue.submit([commandEncoder.finish()])
+      return
+    }
+
+    this.displayTexture(context, outputTexture)
+  }
+
+  /**
+   * Render the current image with all effects applied and return pixel data.
+   * This renders at full image resolution, not display resolution.
+   * Returns null if no image is loaded.
+   */
+  async renderForExport(): Promise<{
+    data: Uint8ClampedArray
+    width: number
+    height: number
+  } | null> {
+    const outputTexture = this.renderEffects(true)
+    if (!outputTexture) {
+      return null
+    }
+
+    // Read pixel data from the output texture
+    const bytesPerRow = Math.ceil((this.imageWidth * 4) / 256) * 256 // Must be aligned to 256
+    const bufferSize = bytesPerRow * this.imageHeight
+
+    const readBuffer = this.device.createBuffer({
+      size: bufferSize,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    })
+
+    const commandEncoder = this.device.createCommandEncoder()
+    commandEncoder.copyTextureToBuffer(
+      { texture: outputTexture, mipLevel: 0 },
+      { buffer: readBuffer, bytesPerRow, rowsPerImage: this.imageHeight },
+      { width: this.imageWidth, height: this.imageHeight },
+    )
+    this.device.queue.submit([commandEncoder.finish()])
+
+    // Wait for GPU to finish and map the buffer
+    await readBuffer.mapAsync(GPUMapMode.READ)
+    const mappedRange = readBuffer.getMappedRange()
+    const rawData = new Uint8Array(mappedRange)
+
+    // Copy to a properly sized array (removing padding)
+    const pixelData = new Uint8ClampedArray(this.imageWidth * this.imageHeight * 4)
+    for (let y = 0; y < this.imageHeight; y++) {
+      const srcOffset = y * bytesPerRow
+      const dstOffset = y * this.imageWidth * 4
+      pixelData.set(rawData.subarray(srcOffset, srcOffset + this.imageWidth * 4), dstOffset)
+    }
+
+    readBuffer.unmap()
+    readBuffer.destroy()
+
+    return {
+      data: pixelData,
+      width: this.imageWidth,
+      height: this.imageHeight,
+    }
+  }
+
+  /**
+   * Get current image dimensions (for export naming)
+   */
+  getImageDimensions(): { width: number; height: number } | null {
+    if (!this.imageTexture) {
+      return null
+    }
+    return { width: this.imageWidth, height: this.imageHeight }
   }
 
   /**

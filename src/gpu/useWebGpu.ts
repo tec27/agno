@@ -22,7 +22,9 @@ export function useWebGpu(): WebGpuState {
         if (!destroyed) {
           setState({
             status: 'error',
-            error: err instanceof Error ? err.message : 'Failed to initialize WebGPU',
+            error:
+              'An error occurred while initializing WebGPU: ' +
+              (err instanceof Error ? err.message : 'Failed to initialize WebGPU'),
           })
         }
       }

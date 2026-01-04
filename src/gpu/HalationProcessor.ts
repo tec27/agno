@@ -258,6 +258,7 @@ export class HalationProcessor {
       mipLevelCount,
       usage:
         GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.COPY_SRC |
         GPUTextureUsage.STORAGE_BINDING |
         GPUTextureUsage.RENDER_ATTACHMENT,
     })
