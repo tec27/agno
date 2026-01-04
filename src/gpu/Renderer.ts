@@ -603,7 +603,72 @@ export class Renderer {
       return
     }
 
-    // No grain blend - show original image
+    // No grain blend - but check if halation is enabled
+    if (this.halationProcessor.isEnabled() && this.halationProcessor.isReady()) {
+      // End the render pass temporarily to run halation compute shaders
+      renderPass.end()
+      this.device.queue.submit([commandEncoder.finish()])
+
+      // Apply halation to the original image
+      displayTexture = this.halationProcessor.process(
+        displayTexture,
+        this.generateMipmaps.bind(this),
+      )
+
+      // Create new command encoder for final render pass
+      const renderEncoder = this.device.createCommandEncoder()
+      const finalRenderPass = renderEncoder.beginRenderPass({
+        colorAttachments: [
+          {
+            view: context.getCurrentTexture().createView(),
+            clearValue: { r: 0.1, g: 0.1, b: 0.1, a: 1 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          },
+        ],
+      })
+
+      // Get canvas dimensions for aspect ratio
+      const canvasTexture = context.getCurrentTexture()
+      const canvasWidth = canvasTexture.width
+      const canvasHeight = canvasTexture.height
+
+      // Update view uniform buffer
+      this.device.queue.writeBuffer(
+        this.viewUniformBuffer,
+        0,
+        new Float32Array([
+          this.viewState.zoom,
+          this.viewState.centerX,
+          this.viewState.centerY,
+          canvasWidth / canvasHeight,
+          this.imageWidth / this.imageHeight,
+          0,
+          0,
+          0,
+        ]),
+      )
+
+      // Create bind group with halation output texture
+      const bindGroup = this.device.createBindGroup({
+        layout: this.bindGroupLayout,
+        entries: [
+          { binding: 0, resource: displayTexture.createView() },
+          { binding: 1, resource: this.sampler },
+          { binding: 2, resource: { buffer: this.viewUniformBuffer } },
+        ],
+      })
+
+      finalRenderPass.setPipeline(this.pipeline)
+      finalRenderPass.setBindGroup(0, bindGroup)
+      finalRenderPass.draw(3)
+      finalRenderPass.end()
+
+      this.device.queue.submit([renderEncoder.finish()])
+      return
+    }
+
+    // No effects - show original image
     // Get canvas dimensions for aspect ratio
     const canvasTexture = context.getCurrentTexture()
     const canvasWidth = canvasTexture.width
