@@ -1,19 +1,8 @@
 import { useState } from 'react'
-import type { EffectParams } from '../App'
+import { DEFAULT_PARAMS, type EffectParams } from '../effectParams'
 import { SliderControl } from './SliderControl'
 
 type ActivePanel = 'none' | 'grain' | 'film' | 'halation' | 'seed'
-
-const DEFAULT_PARAMS = {
-  grainStrength: 0.5,
-  grainSize: 1.0,
-  grainSaturation: 0.7,
-  filmToe: 0.0,
-  filmMidtoneBias: 1.0,
-  halationStrength: 0.3,
-  halationThreshold: 0.8,
-  halationRadius: 20,
-}
 
 export function MobileControlsPanel({
   params,

@@ -1,38 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { WebGpuCanvas } from './canvas/WebGpuCanvas'
+import { EffectSection } from './controls/EffectSection'
 import { MobileControlsPanel } from './controls/MobileControlsPanel'
 import { SliderControl } from './controls/SliderControl'
-import { configureCanvasContext } from './gpu/context'
+import { DEFAULT_PARAMS } from './effectParams'
 import { Renderer } from './gpu/Renderer'
 import { useWebGpu } from './gpu/useWebGpu'
-import { useObservedDimensions } from './hooks/useObservedDimensions'
-import { DEFAULT_VIEW_STATE, ZOOM_STEP, zoomToward } from './zoom'
-
-const DEFAULT_PARAMS = {
-  seed: Math.floor(Math.random() * 0x80000000),
-
-  grainEnabled: true,
-  grainStrength: 0.5,
-  grainSize: 1.0,
-  grainSaturation: 0.7,
-
-  filmEnabled: true,
-  filmToe: 0.0,
-  filmMidtoneBias: 1.0,
-
-  halationEnabled: false,
-  halationStrength: 0.3,
-  halationThreshold: 0.8,
-  halationRadius: 20,
-  halationMonochrome: false,
-}
-
-export type EffectParams = typeof DEFAULT_PARAMS
+import { useFileDrop } from './hooks/useFileDrop'
 
 export default function App() {
   const [params, setParams] = useState(DEFAULT_PARAMS)
   const [image, setImage] = useState<ImageBitmap | null>(null)
   const [imageName, setImageName] = useState('')
-  const [isDragging, setIsDragging] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showOriginal, setShowOriginal] = useState(false)
   const [exportFormat, setExportFormat] = useState<'png' | 'jpeg' | 'webp'>('jpeg')
@@ -42,6 +21,28 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const gpu = useWebGpu()
+
+  async function handleFile(file: File) {
+    if (!file.type.startsWith('image/')) {
+      setError('Please select an image file')
+      return
+    }
+
+    try {
+      setError(null)
+      const bitmap = await createImageBitmap(file)
+      setImage(bitmap)
+      // Extract base name without extension for export naming
+      const baseName = file.name.replace(/\.[^.]+$/, '')
+      setImageName(baseName)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load image')
+    }
+  }
+
+  const { isDragging, dropProps } = useFileDrop(file => {
+    handleFile(file).catch(console.error)
+  })
 
   // Create renderer when GPU context is ready
   useEffect(() => {
@@ -55,6 +56,7 @@ export default function App() {
 
     return () => {
       newRenderer.destroy()
+      setRenderer(r => (r === newRenderer ? null : r))
     }
   }, [gpu])
 
@@ -95,24 +97,6 @@ export default function App() {
     }
   }
 
-  async function handleFile(file: File) {
-    if (!file.type.startsWith('image/')) {
-      setError('Please select an image file')
-      return
-    }
-
-    try {
-      setError(null)
-      const bitmap = await createImageBitmap(file)
-      setImage(bitmap)
-      // Extract base name without extension for export naming
-      const baseName = file.name.replace(/\.[^.]+$/, '')
-      setImageName(baseName)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load image')
-    }
-  }
-
   // Show WebGPU error state
   if (gpu.status === 'error') {
     return (
@@ -138,7 +122,7 @@ export default function App() {
       )}
 
       {gpu.status === 'loading' ? (
-        <p className='text-base-content/40'>Initializing WebGPU...</p>
+        <p className='text-base-content/40'>initializing webgpu...</p>
       ) : image && renderer ? (
         <WebGpuCanvas
           image={image}
@@ -150,7 +134,12 @@ export default function App() {
           renderer={renderer}
         />
       ) : (
-        <p className='text-base-content/40'>drop an image here or click to open</p>
+        <>
+          <p className='text-base-content/40 hidden md:block'>
+            drop an image here or click to get started
+          </p>
+          <p className='text-base-content/40 md:hidden'>tap to open an image and get started</p>
+        </>
       )}
     </>
   )
@@ -202,20 +191,7 @@ export default function App() {
           className={`bg-base-200/50 relative flex min-h-0 flex-1 cursor-pointer items-center justify-center overflow-hidden transition-colors ${
             isDragging ? 'bg-primary/10' : ''
           }`}
-          onDrop={e => {
-            e.preventDefault()
-            setIsDragging(false)
-            const file = e.dataTransfer.files[0] as File | undefined
-            if (file) handleFile(file).catch(console.error)
-          }}
-          onDragOver={e => {
-            e.preventDefault()
-            setIsDragging(true)
-          }}
-          onDragLeave={e => {
-            e.preventDefault()
-            setIsDragging(false)
-          }}
+          {...dropProps}
           onClick={() => {
             if (!image) fileInputRef.current?.click()
           }}>
@@ -462,20 +438,7 @@ export default function App() {
                 ? 'border-solid'
                 : 'border-dashed'
           }`}
-          onDrop={e => {
-            e.preventDefault()
-            setIsDragging(false)
-            const file = e.dataTransfer.files[0] as File | undefined
-            if (file) handleFile(file).catch(console.error)
-          }}
-          onDragOver={e => {
-            e.preventDefault()
-            setIsDragging(true)
-          }}
-          onDragLeave={e => {
-            e.preventDefault()
-            setIsDragging(false)
-          }}
+          {...dropProps}
           onClick={() => {
             if (!image) fileInputRef.current?.click()
           }}>
@@ -494,697 +457,6 @@ export default function App() {
         }}
         className='hidden'
       />
-    </div>
-  )
-}
-
-function WebGpuCanvas({
-  image,
-  params,
-  showOriginal,
-  onToggleOriginal,
-  renderer,
-}: {
-  image: ImageBitmap
-  params: EffectParams
-  showOriginal: boolean
-  onToggleOriginal: () => void
-  renderer: Renderer
-}) {
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const canvasContextRef = useRef<GPUCanvasContext | null>(null)
-
-  // View state (zoom and pan)
-  const [viewState, setViewState] = useState(DEFAULT_VIEW_STATE)
-
-  // Container dimensions for canvas sizing and zoom percentage calculation
-  const [containerRef, containerSize] = useObservedDimensions<HTMLDivElement>()
-
-  // Drag state for panning (mouse)
-  const [isDragging, setIsDragging] = useState(false)
-  const dragStartRef = useRef<{ x: number; y: number; centerX: number; centerY: number } | null>(
-    null,
-  )
-
-  // Touch state for pinch-to-zoom and drag
-  const touchStateRef = useRef<{
-    type: 'drag' | 'pinch'
-    // For drag
-    startX?: number
-    startY?: number
-    startCenterX?: number
-    startCenterY?: number
-    // For pinch
-    startDistance?: number
-    startZoom?: number
-    pinchCenterX?: number
-    pinchCenterY?: number
-  } | null>(null)
-
-  // Sync view state with renderer and trigger re-render
-  useEffect(() => {
-    const canvasContext = canvasContextRef.current
-    if (!canvasContext) return
-
-    renderer.setViewState(viewState)
-    renderer.render(canvasContext)
-  }, [renderer, viewState])
-
-  // Calculate aspect ratio scale factors (matches shader logic)
-  const getAspectScaleFactors = useCallback((): { scaleX: number; scaleY: number } => {
-    if (!containerSize) return { scaleX: 1, scaleY: 1 }
-
-    const aspectCanvas = containerSize.width / containerSize.height
-    const aspectImage = image.width / image.height
-
-    if (aspectImage > aspectCanvas) {
-      // Image is wider than canvas - letterbox (black bars top/bottom)
-      return { scaleX: 1, scaleY: aspectImage / aspectCanvas }
-    } else {
-      // Image is taller than canvas - pillarbox (black bars left/right)
-      return { scaleX: aspectCanvas / aspectImage, scaleY: 1 }
-    }
-  }, [containerSize, image.height, image.width])
-
-  // Handle scroll-to-zoom (added via useEffect to use { passive: false })
-  useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas || !containerSize) return
-
-    const handleWheel = (e: WheelEvent) => {
-      e.preventDefault()
-
-      const rect = canvas.getBoundingClientRect()
-      const canvasX = (e.clientX - rect.left) / rect.width
-      const canvasY = (e.clientY - rect.top) / rect.height
-
-      // Calculate aspect ratio correction inline (matches shader logic)
-      const aspectCanvas = containerSize.width / containerSize.height
-      const aspectImage = image.width / image.height
-      const scaleX = aspectImage > aspectCanvas ? 1 : aspectCanvas / aspectImage
-      const scaleY = aspectImage > aspectCanvas ? aspectImage / aspectCanvas : 1
-
-      const correctedX = (canvasX - 0.5) * scaleX + 0.5
-      const correctedY = (canvasY - 0.5) * scaleY + 0.5
-
-      // Convert to image coords using current view
-      const imageX = (correctedX - 0.5) / viewState.zoom + viewState.centerX
-      const imageY = (correctedY - 0.5) / viewState.zoom + viewState.centerY
-
-      // Determine zoom direction
-      const zoomIn = e.deltaY < 0
-      const zoomFactor = zoomIn ? ZOOM_STEP : 1 / ZOOM_STEP
-      const newZoom = viewState.zoom * zoomFactor
-
-      setViewState(
-        zoomToward({
-          newZoom,
-          targetX: imageX,
-          targetY: imageY,
-          currentZoom: viewState.zoom,
-          currentCenterX: viewState.centerX,
-          currentCenterY: viewState.centerY,
-        }),
-      )
-    }
-
-    canvas.addEventListener('wheel', handleWheel, { passive: false })
-    return () => {
-      canvas.removeEventListener('wheel', handleWheel)
-    }
-  }, [viewState, containerSize, image.width, image.height])
-
-  // Handle drag start
-  function handleMouseDown(e: React.MouseEvent<HTMLCanvasElement>) {
-    if (e.button !== 0) return // Left click only
-
-    setIsDragging(true)
-    dragStartRef.current = {
-      x: e.clientX,
-      y: e.clientY,
-      centerX: viewState.centerX,
-      centerY: viewState.centerY,
-    }
-  }
-
-  // Handle drag move
-  function handleMouseMove(e: React.MouseEvent<HTMLCanvasElement>) {
-    if (!isDragging || !dragStartRef.current) return
-
-    const canvas = canvasRef.current
-    if (!canvas) return
-
-    const rect = canvas.getBoundingClientRect()
-
-    // Calculate drag delta in normalized canvas units
-    const rawDeltaX = (e.clientX - dragStartRef.current.x) / rect.width
-    const rawDeltaY = (e.clientY - dragStartRef.current.y) / rect.height
-
-    // Apply aspect ratio correction and zoom to get image-space delta
-    const { scaleX, scaleY } = getAspectScaleFactors()
-    const deltaX = (rawDeltaX * scaleX) / viewState.zoom
-    const deltaY = (rawDeltaY * scaleY) / viewState.zoom
-
-    setViewState({
-      zoom: viewState.zoom,
-      centerX: dragStartRef.current.centerX - deltaX,
-      centerY: dragStartRef.current.centerY - deltaY,
-    })
-  }
-
-  // Handle drag end
-  function handleMouseUp() {
-    setIsDragging(false)
-    dragStartRef.current = null
-  }
-
-  // Handle touch gestures (added via useEffect to use { passive: false })
-  useEffect(() => {
-    const canvasEl = canvasRef.current
-    if (!canvasEl || !containerSize) return
-
-    // Helper function to get distance between two touch points
-    function getTouchDistance(touch1: Touch, touch2: Touch): number {
-      return Math.hypot(touch2.clientX - touch1.clientX, touch2.clientY - touch1.clientY)
-    }
-
-    // Helper function to get center point between two touches
-    function getTouchCenter(touch1: Touch, touch2: Touch): { x: number; y: number } {
-      return {
-        x: (touch1.clientX + touch2.clientX) / 2,
-        y: (touch1.clientY + touch2.clientY) / 2,
-      }
-    }
-
-    // Pre-compute aspect ratio values (we know containerSize is defined from the guard above)
-    const aspectCanvas = containerSize.width / containerSize.height
-    const aspectImage = image.width / image.height
-    const scaleX = aspectImage > aspectCanvas ? 1 : aspectCanvas / aspectImage
-    const scaleY = aspectImage > aspectCanvas ? aspectImage / aspectCanvas : 1
-
-    // Convert screen coordinates to image coordinates
-    function screenToImageCoords(clientX: number, clientY: number): { x: number; y: number } {
-      if (!canvasEl) return { x: 0.5, y: 0.5 }
-      const rect = canvasEl.getBoundingClientRect()
-      const canvasX = (clientX - rect.left) / rect.width
-      const canvasY = (clientY - rect.top) / rect.height
-
-      const correctedX = (canvasX - 0.5) * scaleX + 0.5
-      const correctedY = (canvasY - 0.5) * scaleY + 0.5
-
-      // Convert to image coords using current view
-      const imageX = (correctedX - 0.5) / viewState.zoom + viewState.centerX
-      const imageY = (correctedY - 0.5) / viewState.zoom + viewState.centerY
-
-      return { x: imageX, y: imageY }
-    }
-
-    const handleTouchStart = (e: TouchEvent) => {
-      e.preventDefault()
-      const touches = e.touches
-
-      if (touches.length === 1) {
-        // Single touch = drag
-        const touch = touches[0]
-        touchStateRef.current = {
-          type: 'drag',
-          startX: touch.clientX,
-          startY: touch.clientY,
-          startCenterX: viewState.centerX,
-          startCenterY: viewState.centerY,
-        }
-        setIsDragging(true)
-      } else if (touches.length === 2) {
-        // Two touches = pinch to zoom
-        const distance = getTouchDistance(touches[0], touches[1])
-        const center = getTouchCenter(touches[0], touches[1])
-        const imageCoords = screenToImageCoords(center.x, center.y)
-
-        touchStateRef.current = {
-          type: 'pinch',
-          startDistance: distance,
-          startZoom: viewState.zoom,
-          pinchCenterX: imageCoords.x,
-          pinchCenterY: imageCoords.y,
-          startCenterX: viewState.centerX,
-          startCenterY: viewState.centerY,
-        }
-        setIsDragging(false)
-      }
-    }
-
-    const handleTouchMove = (e: TouchEvent) => {
-      e.preventDefault()
-      const touchState = touchStateRef.current
-      if (!touchState) return
-
-      const touches = e.touches
-      const rect = canvasEl.getBoundingClientRect()
-
-      if (touchState.type === 'drag' && touches.length === 1) {
-        // Single touch drag
-        const touch = touches[0]
-
-        const rawDeltaX = (touch.clientX - (touchState.startX ?? 0)) / rect.width
-        const rawDeltaY = (touch.clientY - (touchState.startY ?? 0)) / rect.height
-
-        const { scaleX, scaleY } = getAspectScaleFactors()
-        const deltaX = (rawDeltaX * scaleX) / viewState.zoom
-        const deltaY = (rawDeltaY * scaleY) / viewState.zoom
-
-        setViewState({
-          zoom: viewState.zoom,
-          centerX: (touchState.startCenterX ?? 0.5) - deltaX,
-          centerY: (touchState.startCenterY ?? 0.5) - deltaY,
-        })
-      } else if (touchState.type === 'pinch' && touches.length === 2) {
-        // Pinch zoom
-        const newDistance = getTouchDistance(touches[0], touches[1])
-        const scale = newDistance / (touchState.startDistance ?? 1)
-        const newZoom = (touchState.startZoom ?? 1) * scale
-
-        // Zoom toward the pinch center
-        setViewState(
-          zoomToward({
-            newZoom,
-            targetX: touchState.pinchCenterX ?? 0.5,
-            targetY: touchState.pinchCenterY ?? 0.5,
-            currentZoom: touchState.startZoom ?? 1,
-            currentCenterX: touchState.startCenterX ?? 0.5,
-            currentCenterY: touchState.startCenterY ?? 0.5,
-          }),
-        )
-      } else if (touches.length === 2 && touchState.type === 'drag') {
-        // Transition from drag to pinch
-        const distance = getTouchDistance(touches[0], touches[1])
-        const center = getTouchCenter(touches[0], touches[1])
-        const imageCoords = screenToImageCoords(center.x, center.y)
-
-        touchStateRef.current = {
-          type: 'pinch',
-          startDistance: distance,
-          startZoom: viewState.zoom,
-          pinchCenterX: imageCoords.x,
-          pinchCenterY: imageCoords.y,
-          startCenterX: viewState.centerX,
-          startCenterY: viewState.centerY,
-        }
-      }
-    }
-
-    const handleTouchEnd = (e: TouchEvent) => {
-      e.preventDefault()
-      if (e.touches.length === 0) {
-        touchStateRef.current = null
-        setIsDragging(false)
-      } else if (e.touches.length === 1 && touchStateRef.current?.type === 'pinch') {
-        // Transition from pinch back to drag
-        const touch = e.touches[0]
-        touchStateRef.current = {
-          type: 'drag',
-          startX: touch.clientX,
-          startY: touch.clientY,
-          startCenterX: viewState.centerX,
-          startCenterY: viewState.centerY,
-        }
-        setIsDragging(true)
-      }
-    }
-
-    canvasEl.addEventListener('touchstart', handleTouchStart, { passive: false })
-    canvasEl.addEventListener('touchmove', handleTouchMove, { passive: false })
-    canvasEl.addEventListener('touchend', handleTouchEnd, { passive: false })
-    canvasEl.addEventListener('touchcancel', handleTouchEnd, { passive: false })
-
-    return () => {
-      canvasEl.removeEventListener('touchstart', handleTouchStart)
-      canvasEl.removeEventListener('touchmove', handleTouchMove)
-      canvasEl.removeEventListener('touchend', handleTouchEnd)
-      canvasEl.removeEventListener('touchcancel', handleTouchEnd)
-    }
-  }, [viewState, containerSize, image.width, image.height, getAspectScaleFactors])
-
-  // Zoom control functions for toolbar
-  function handleZoomIn() {
-    const newZoom = viewState.zoom * ZOOM_STEP
-    setViewState(
-      zoomToward({
-        newZoom,
-        targetX: viewState.centerX,
-        targetY: viewState.centerY,
-        currentZoom: viewState.zoom,
-        currentCenterX: viewState.centerX,
-        currentCenterY: viewState.centerY,
-      }),
-    )
-  }
-
-  function handleZoomOut() {
-    const newZoom = viewState.zoom / ZOOM_STEP
-    setViewState(
-      zoomToward({
-        newZoom,
-        targetX: viewState.centerX,
-        targetY: viewState.centerY,
-        currentZoom: viewState.zoom,
-        currentCenterX: viewState.centerX,
-        currentCenterY: viewState.centerY,
-      }),
-    )
-  }
-
-  function handleFitToWindow() {
-    setViewState(DEFAULT_VIEW_STATE)
-  }
-
-  function handleActualSize() {
-    if (!containerSize) return
-
-    const imageAspect = image.width / image.height
-    const canvasAspect = containerSize.width / containerSize.height
-
-    // Calculate the base scale at zoom=1 (fit to window)
-    let baseScale: number
-    if (imageAspect > canvasAspect) {
-      baseScale = containerSize.width / image.width
-    } else {
-      baseScale = containerSize.height / image.height
-    }
-
-    // To show 100% native pixels, we need zoom = 1 / baseScale
-    const targetZoom = 1 / baseScale
-    setViewState(
-      zoomToward({
-        newZoom: targetZoom,
-        targetX: viewState.centerX,
-        targetY: viewState.centerY,
-        currentZoom: viewState.zoom,
-        currentCenterX: viewState.centerX,
-        currentCenterY: viewState.centerY,
-      }),
-    )
-  }
-
-  // Calculate actual image scale (percentage of native image size)
-  // At zoom=1 (fit to window), the image is scaled to fit the canvas
-  // This calculates what percentage of the native image pixels we're showing
-  function getActualImageScale(): number {
-    if (!containerSize) return 100
-
-    const imageAspect = image.width / image.height
-    const canvasAspect = containerSize.width / containerSize.height
-
-    // The shader fits the image within the canvas, so we need to figure out
-    // which dimension is the limiting factor
-    let baseScale: number
-    if (imageAspect > canvasAspect) {
-      // Image is wider than canvas - width is the limiting factor
-      baseScale = containerSize.width / image.width
-    } else {
-      // Image is taller than canvas - height is the limiting factor
-      baseScale = containerSize.height / image.height
-    }
-
-    // Multiply by current zoom to get actual scale
-    return baseScale * viewState.zoom * 100
-  }
-
-  // Configure canvas when container size changes
-  useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas || !containerSize) return
-
-    // Guard against zero-sized containers (can happen during initial layout)
-    if (containerSize.width <= 0 || containerSize.height <= 0) return
-
-    // Size canvas to fill container (shader handles aspect ratio)
-    canvas.width = Math.round(containerSize.width * window.devicePixelRatio)
-    canvas.height = Math.round(containerSize.height * window.devicePixelRatio)
-    canvas.style.width = `${String(containerSize.width)}px`
-    canvas.style.height = `${String(containerSize.height)}px`
-
-    const canvasContext = configureCanvasContext(canvas, renderer.getContext())
-    canvasContextRef.current = canvasContext
-
-    // Re-render after resize
-    renderer.render(canvasContext)
-  }, [renderer, containerSize])
-
-  // Update grain params and regenerate tiles when grain settings change (debounced)
-  useEffect(() => {
-    const canvasContext = canvasContextRef.current
-
-    renderer.setGrainParams({
-      seed: params.seed,
-      grainSize: params.grainSize,
-      arLag: 2,
-    })
-
-    // Debounce tile generation to avoid overwhelming the GPU while dragging
-    const timeoutId = setTimeout(() => {
-      renderer
-        .updateGrain()
-        .then(() => {
-          if (canvasContext) {
-            renderer.render(canvasContext)
-          }
-        })
-        .catch(console.error)
-    }, 60)
-
-    return () => {
-      clearTimeout(timeoutId)
-    }
-  }, [renderer, params.seed, params.grainSize])
-
-  // Update blend params when effect settings change
-  useEffect(() => {
-    const canvasContext = canvasContextRef.current
-
-    renderer.setBlendParams({
-      enabled: !showOriginal && (params.grainEnabled || params.filmEnabled),
-      strength: params.grainEnabled ? params.grainStrength : 0,
-      saturation: params.grainSaturation,
-      toe: params.filmEnabled ? params.filmToe : 0,
-      midtoneBias: params.filmEnabled ? params.filmMidtoneBias : 1,
-    })
-
-    if (canvasContext) {
-      renderer.render(canvasContext)
-    }
-  }, [
-    renderer,
-    showOriginal,
-    params.grainEnabled,
-    params.grainStrength,
-    params.grainSaturation,
-    params.filmEnabled,
-    params.filmToe,
-    params.filmMidtoneBias,
-  ])
-
-  // Update halation params when halation settings change
-  useEffect(() => {
-    const canvasContext = canvasContextRef.current
-
-    renderer.setHalationParams({
-      enabled: !showOriginal && params.halationEnabled,
-      strength: params.halationStrength,
-      threshold: params.halationThreshold,
-      radius: params.halationRadius,
-      monochrome: params.halationMonochrome,
-    })
-
-    if (canvasContext) {
-      renderer.render(canvasContext)
-    }
-  }, [
-    renderer,
-    showOriginal,
-    params.halationEnabled,
-    params.halationStrength,
-    params.halationThreshold,
-    params.halationRadius,
-    params.halationMonochrome,
-  ])
-
-  // Upload image when it changes
-  useEffect(() => {
-    renderer.uploadImage(image)
-
-    // Trigger a render if canvas context is ready
-    const canvasContext = canvasContextRef.current
-    if (canvasContext) {
-      renderer.render(canvasContext)
-    }
-  }, [renderer, image])
-
-  // Keyboard shortcuts
-  // O: toggle original image (no effects)
-  // Shift+D: toggle debug mode (secret!)
-  // 0: turn off debug view (show image)
-  // 1-8: show grain tile 0-7
-  useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      // Ignore keyboard shortcuts when typing in a text input
-      const target = e.target as HTMLElement
-      if (target.tagName === 'TEXTAREA' || target.isContentEditable) {
-        return
-      }
-      if (target.tagName === 'INPUT') {
-        const inputType = (target as HTMLInputElement).type
-        // Allow hotkeys for non-text inputs like range sliders
-        if (inputType !== 'range' && inputType !== 'checkbox' && inputType !== 'radio') {
-          return
-        }
-      }
-
-      // O: toggle original image view
-      if (e.key === 'o' || e.key === 'O') {
-        onToggleOriginal()
-        return
-      }
-
-      const canvasContext = canvasContextRef.current
-      if (!canvasContext) return
-
-      // Shift+D: toggle debug mode
-      if (e.key === 'D' && e.shiftKey) {
-        const currentState = renderer.getDebugState()
-        renderer.setDebugState({ showGrainTile: !currentState.showGrainTile })
-        renderer.render(canvasContext)
-        return
-      }
-
-      // 0: turn off debug mode
-      if (e.key === '0') {
-        renderer.setDebugState({ showGrainTile: false })
-        renderer.render(canvasContext)
-        return
-      }
-
-      // 1-8: change grain tile (only if already in debug mode)
-      const currentState = renderer.getDebugState()
-      if (e.key >= '1' && e.key <= '8' && currentState.showGrainTile) {
-        renderer.setDebugState({
-          tileIndex: parseInt(e.key, 10) - 1,
-        })
-        renderer.render(canvasContext)
-      }
-    }
-
-    window.addEventListener('keydown', handleKeyDown)
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [renderer, onToggleOriginal])
-
-  // Determine cursor style based on zoom and drag state
-  const canZoom = viewState.zoom > 1.0
-  const cursorClass = isDragging ? 'cursor-grabbing' : canZoom ? 'cursor-grab' : 'cursor-default'
-
-  return (
-    <div ref={containerRef} className='relative h-full w-full'>
-      <canvas
-        ref={canvasRef}
-        className={`h-full w-full touch-none ${cursorClass}`}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
-      />
-
-      {/* Zoom toolbar - hidden on mobile (pinch-to-zoom + header controls) */}
-      <div className='absolute bottom-3 right-3 hidden items-center gap-1 rounded-lg bg-base-300/80 p-1 backdrop-blur-sm md:flex'>
-        <button
-          className={`btn btn-sm px-2 text-xs font-normal ${showOriginal ? 'btn-primary' : 'btn-ghost text-base-content/70'}`}
-          onClick={onToggleOriginal}
-          title='Show original (O)'>
-          original
-        </button>
-
-        <div className='mx-1 h-4 w-px bg-base-content/20' />
-
-        <button
-          className='btn btn-ghost btn-sm btn-square'
-          onClick={handleZoomOut}
-          title='Zoom out'>
-          <svg
-            xmlns='http://www.w3.org/2000/svg'
-            viewBox='0 0 20 20'
-            fill='currentColor'
-            className='h-5 w-5'>
-            <path d='M4 10a.75.75 0 0 1 .75-.75h10.5a.75.75 0 0 1 0 1.5H4.75A.75.75 0 0 1 4 10Z' />
-          </svg>
-        </button>
-
-        <span className='min-w-12 text-center font-mono text-sm text-base-content/70'>
-          {Math.round(getActualImageScale())}%
-        </span>
-
-        <button className='btn btn-ghost btn-sm btn-square' onClick={handleZoomIn} title='Zoom in'>
-          <svg
-            xmlns='http://www.w3.org/2000/svg'
-            viewBox='0 0 20 20'
-            fill='currentColor'
-            className='h-5 w-5'>
-            <path d='M10.75 4.75a.75.75 0 0 0-1.5 0v4.5h-4.5a.75.75 0 0 0 0 1.5h4.5v4.5a.75.75 0 0 0 1.5 0v-4.5h4.5a.75.75 0 0 0 0-1.5h-4.5v-4.5Z' />
-          </svg>
-        </button>
-
-        <div className='mx-1 h-4 w-px bg-base-content/20' />
-
-        <button
-          className='btn btn-ghost btn-sm btn-square'
-          onClick={handleFitToWindow}
-          title='Fit to window'>
-          <svg
-            xmlns='http://www.w3.org/2000/svg'
-            viewBox='0 0 20 20'
-            fill='currentColor'
-            className='h-5 w-5'>
-            <path d='M13.28 7.78l3.22-3.22v2.69a.75.75 0 0 0 1.5 0v-4.5a.75.75 0 0 0-.75-.75h-4.5a.75.75 0 0 0 0 1.5h2.69l-3.22 3.22a.75.75 0 0 0 1.06 1.06ZM2 12.25v4.5c0 .414.336.75.75.75h4.5a.75.75 0 0 0 0-1.5H4.56l3.22-3.22a.75.75 0 0 0-1.06-1.06L3.5 14.94v-2.69a.75.75 0 0 0-1.5 0Z' />
-          </svg>
-        </button>
-
-        <button
-          className='btn btn-ghost btn-sm px-2 font-mono text-xs font-normal text-base-content/70'
-          onClick={handleActualSize}
-          title='Actual size'>
-          1:1
-        </button>
-      </div>
-    </div>
-  )
-}
-
-function EffectSection({
-  label,
-  enabled,
-  onToggle,
-  children,
-}: {
-  label: string
-  enabled: boolean
-  onToggle: (enabled: boolean) => void
-  children: React.ReactNode
-}) {
-  return (
-    <div className='card bg-base-200 border-primary/30 mx-2 border'>
-      <div className='card-body p-0'>
-        <label className='flex cursor-pointer items-center justify-between py-4 pr-3 pl-4'>
-          <span className='card-title text-base select-none'>{label}</span>
-          <input
-            type='checkbox'
-            checked={enabled}
-            onChange={e => {
-              onToggle(e.target.checked)
-            }}
-            className='toggle toggle-primary'
-          />
-        </label>
-        {enabled && <div className='space-y-4 pb-4'>{children}</div>}
-      </div>
     </div>
   )
 }
