@@ -5,6 +5,8 @@ import { useWebGpu } from './gpu/useWebGpu'
 import { useObservedDimensions } from './hooks/useObservedDimensions'
 
 const DEFAULT_PARAMS = {
+  seed: Math.floor(Math.random() * 0x80000000),
+
   grainEnabled: true,
   grainStrength: 0.5,
   grainSize: 1.0,
@@ -71,6 +73,33 @@ export default function App() {
             onClick={() => fileInputRef.current?.click()}>
             {image ? 'change image' : 'open image'}
           </button>
+
+          <div className='px-4'>
+            <div className='px-1 mb-1 text-sm'>
+              <span className='text-base-content/60 select-none pointer-events-none'>seed</span>
+            </div>
+            <div className='join w-full'>
+              <input
+                type='number'
+                className='input input-sm join-item flex-1 min-w-0 border-primary'
+                value={params.seed}
+                onChange={e => {
+                  const val = parseInt(e.target.value, 10)
+                  if (!isNaN(val)) {
+                    setParams(p => ({ ...p, seed: val }))
+                  }
+                }}
+              />
+              <button
+                className='btn btn-sm btn-primary join-item'
+                title='Randomize seed'
+                onClick={() => {
+                  setParams(p => ({ ...p, seed: Math.floor(Math.random() * 0x80000000) }))
+                }}>
+                🎲
+              </button>
+            </div>
+          </div>
 
           <EffectSection
             label='grain'
@@ -519,7 +548,7 @@ function WebGpuCanvas({
     if (!renderer) return
 
     renderer.setGrainParams({
-      seed: 0, // TODO: add seed UI control
+      seed: params.seed,
       grainSize: params.grainSize,
       arLag: 2,
     })
@@ -539,7 +568,7 @@ function WebGpuCanvas({
     return () => {
       clearTimeout(timeoutId)
     }
-  }, [params.grainSize])
+  }, [params.seed, params.grainSize])
 
   // Update blend params when effect settings change
   useEffect(() => {
@@ -610,10 +639,17 @@ function WebGpuCanvas({
   // 1-8: show grain tile 0-7
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      // Ignore keyboard shortcuts when typing in an input
+      // Ignore keyboard shortcuts when typing in a text input
       const target = e.target as HTMLElement
-      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+      if (target.tagName === 'TEXTAREA' || target.isContentEditable) {
         return
+      }
+      if (target.tagName === 'INPUT') {
+        const inputType = (target as HTMLInputElement).type
+        // Allow hotkeys for non-text inputs like range sliders
+        if (inputType !== 'range' && inputType !== 'checkbox' && inputType !== 'radio') {
+          return
+        }
       }
 
       const renderer = rendererRef.current
@@ -784,7 +820,7 @@ function SliderControl({
   return (
     <div className='px-3'>
       <div className='px-1 mb-1 flex justify-between text-sm'>
-        <span className='text-base-content/60'>{label}</span>
+        <span className='text-base-content/60 select-none pointer-events-none'>{label}</span>
         {isEditing ? (
           <input
             type='text'
