@@ -7,6 +7,7 @@ import { DEFAULT_PARAMS } from './effectParams'
 import { Renderer } from './gpu/Renderer'
 import { useWebGpu } from './gpu/useWebGpu'
 import { useFileDrop } from './hooks/useFileDrop'
+import { useImagePaste } from './hooks/useImagePaste'
 
 export default function App() {
   const [params, setParams] = useState(DEFAULT_PARAMS)
@@ -17,6 +18,7 @@ export default function App() {
   const [exportFormat, setExportFormat] = useState<'png' | 'jpeg' | 'webp'>('jpeg')
   const [exportQuality, setExportQuality] = useState(0.95)
   const [isExporting, setIsExporting] = useState(false)
+  const [isCopying, setIsCopying] = useState(false)
   const [renderer, setRenderer] = useState<Renderer | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -41,6 +43,10 @@ export default function App() {
   }
 
   const { isDragging, dropProps } = useFileDrop(file => {
+    handleFile(file).catch(console.error)
+  })
+
+  useImagePaste(file => {
     handleFile(file).catch(console.error)
   })
 
@@ -94,6 +100,32 @@ export default function App() {
       URL.revokeObjectURL(url)
     } finally {
       setIsExporting(false)
+    }
+  }
+
+  async function handleCopyToClipboard() {
+    if (!renderer || isCopying) return
+
+    setIsCopying(true)
+    try {
+      const result = await renderer.renderForExport()
+      if (!result) return
+
+      // Draw to an offscreen canvas to create the image
+      const offscreen = new OffscreenCanvas(result.width, result.height)
+      const ctx2d = offscreen.getContext('2d')
+      if (!ctx2d) return
+
+      // Create ImageData and put pixels
+      const imageData = ctx2d.createImageData(result.width, result.height)
+      imageData.data.set(result.data)
+      ctx2d.putImageData(imageData, 0, 0)
+
+      // Clipboard API requires PNG format
+      const blob = await offscreen.convertToBlob({ type: 'image/png' })
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
+    } finally {
+      setIsCopying(false)
     }
   }
 
@@ -410,21 +442,51 @@ export default function App() {
                 />
               )}
 
-              <button
-                className='btn btn-primary w-full'
-                onClick={() => {
-                  handleExport().catch(console.error)
-                }}
-                disabled={!image || isExporting}>
-                {isExporting ? (
-                  <>
+              <div className='flex gap-2'>
+                <button
+                  className='btn btn-primary flex-1'
+                  onClick={() => {
+                    handleExport().catch(console.error)
+                  }}
+                  disabled={!image || isExporting}>
+                  {isExporting ? (
+                    <>
+                      <span className='loading loading-spinner loading-sm' />
+                      saving...
+                    </>
+                  ) : (
+                    'save'
+                  )}
+                </button>
+                <button
+                  className='btn btn-ghost btn-square'
+                  onClick={() => {
+                    handleCopyToClipboard().catch(console.error)
+                  }}
+                  disabled={!image || isCopying}
+                  title='Copy to clipboard'>
+                  {isCopying ? (
                     <span className='loading loading-spinner loading-sm' />
-                    exporting...
-                  </>
-                ) : (
-                  'export image'
-                )}
-              </button>
+                  ) : (
+                    <svg
+                      xmlns='http://www.w3.org/2000/svg'
+                      viewBox='0 0 20 20'
+                      fill='currentColor'
+                      className='h-5 w-5'>
+                      <path
+                        fillRule='evenodd'
+                        d='M15.988 3.012A2.25 2.25 0 0 1 18 5.25v6.5A2.25 2.25 0 0 1 15.75 14H13.5V7A2.5 2.5 0 0 0 11 4.5H8.128a2.252 2.252 0 0 1 1.884-1.488A2.25 2.25 0 0 1 12.25 1h1.5a2.25 2.25 0 0 1 2.238 2.012ZM11.5 3.25a.75.75 0 0 1 .75-.75h1.5a.75.75 0 0 1 .75.75v.25h-3v-.25Z'
+                        clipRule='evenodd'
+                      />
+                      <path
+                        fillRule='evenodd'
+                        d='M2 7a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V7Zm2 3.25a.75.75 0 0 1 .75-.75h4.5a.75.75 0 0 1 0 1.5h-4.5a.75.75 0 0 1-.75-.75Zm0 3.5a.75.75 0 0 1 .75-.75h4.5a.75.75 0 0 1 0 1.5h-4.5a.75.75 0 0 1-.75-.75Z'
+                        clipRule='evenodd'
+                      />
+                    </svg>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </aside>
