@@ -159,7 +159,7 @@ export function MobileControlsPanel({
               min={0}
               max={5}
               onChange={v => {
-                setParams(p => ({ ...p, grainStrength: v }))
+                setParams(p => ({ ...p, grainStrength: v, grainEnabled: true }))
               }}
             />
             <SliderControl
@@ -169,7 +169,7 @@ export function MobileControlsPanel({
               min={0.1}
               max={4}
               onChange={v => {
-                setParams(p => ({ ...p, grainSize: v }))
+                setParams(p => ({ ...p, grainSize: v, grainEnabled: true }))
               }}
             />
             <SliderControl
@@ -179,7 +179,7 @@ export function MobileControlsPanel({
               min={0}
               max={2}
               onChange={v => {
-                setParams(p => ({ ...p, grainSaturation: v }))
+                setParams(p => ({ ...p, grainSaturation: v, grainEnabled: true }))
               }}
             />
           </>
@@ -195,7 +195,7 @@ export function MobileControlsPanel({
               max={0.5}
               precision={3}
               onChange={v => {
-                setParams(p => ({ ...p, filmToe: v }))
+                setParams(p => ({ ...p, filmToe: v, filmEnabled: true }))
               }}
             />
             <SliderControl
@@ -205,7 +205,7 @@ export function MobileControlsPanel({
               min={0}
               max={2}
               onChange={v => {
-                setParams(p => ({ ...p, filmMidtoneBias: v }))
+                setParams(p => ({ ...p, filmMidtoneBias: v, filmEnabled: true }))
               }}
             />
           </>
@@ -220,7 +220,7 @@ export function MobileControlsPanel({
               min={0}
               max={2}
               onChange={v => {
-                setParams(p => ({ ...p, halationStrength: v }))
+                setParams(p => ({ ...p, halationStrength: v, halationEnabled: true }))
               }}
             />
             <SliderControl
@@ -230,7 +230,7 @@ export function MobileControlsPanel({
               min={0}
               max={1}
               onChange={v => {
-                setParams(p => ({ ...p, halationThreshold: v }))
+                setParams(p => ({ ...p, halationThreshold: v, halationEnabled: true }))
               }}
             />
             <SliderControl
@@ -241,7 +241,7 @@ export function MobileControlsPanel({
               max={100}
               precision={0}
               onChange={v => {
-                setParams(p => ({ ...p, halationRadius: v }))
+                setParams(p => ({ ...p, halationRadius: v, halationEnabled: true }))
               }}
             />
             <label className='flex cursor-pointer items-center justify-between px-3'>
@@ -250,7 +250,7 @@ export function MobileControlsPanel({
                 type='checkbox'
                 checked={params.halationMonochrome}
                 onChange={e => {
-                  setParams(p => ({ ...p, halationMonochrome: e.target.checked }))
+                  setParams(p => ({ ...p, halationMonochrome: e.target.checked, halationEnabled: true }))
                 }}
                 className='toggle toggle-primary toggle-sm'
               />
