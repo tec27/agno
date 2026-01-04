@@ -29,6 +29,7 @@ export default function App() {
   const [image, setImage] = useState<ImageBitmap | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [showOriginal, setShowOriginal] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const gpu = useWebGpu()
@@ -256,7 +257,15 @@ export default function App() {
           {gpu.status === 'loading' ? (
             <p className='text-base-content/40'>Initializing WebGPU...</p>
           ) : image ? (
-            <WebGpuCanvas image={image} ctx={gpu.ctx} params={params} />
+            <WebGpuCanvas
+              image={image}
+              ctx={gpu.ctx}
+              params={params}
+              showOriginal={showOriginal}
+              onToggleOriginal={() => {
+                setShowOriginal(s => !s)
+              }}
+            />
           ) : (
             <p className='text-base-content/40'>drop an image here or click to open</p>
           )}
@@ -281,10 +290,14 @@ function WebGpuCanvas({
   image,
   ctx,
   params,
+  showOriginal,
+  onToggleOriginal,
 }: {
   image: ImageBitmap
   ctx: GpuContext
   params: EffectParams
+  showOriginal: boolean
+  onToggleOriginal: () => void
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const rendererRef = useRef<Renderer | null>(null)
@@ -587,7 +600,7 @@ function WebGpuCanvas({
     if (!renderer) return
 
     renderer.setBlendParams({
-      enabled: params.grainEnabled || params.filmEnabled,
+      enabled: !showOriginal && (params.grainEnabled || params.filmEnabled),
       strength: params.grainEnabled ? params.grainStrength : 0,
       saturation: params.grainSaturation,
       toe: params.filmEnabled ? params.filmToe : 0,
@@ -598,6 +611,7 @@ function WebGpuCanvas({
       renderer.render(canvasContext)
     }
   }, [
+    showOriginal,
     params.grainEnabled,
     params.grainStrength,
     params.grainSaturation,
@@ -613,7 +627,7 @@ function WebGpuCanvas({
     if (!renderer) return
 
     renderer.setHalationParams({
-      enabled: params.halationEnabled,
+      enabled: !showOriginal && params.halationEnabled,
       strength: params.halationStrength,
       threshold: params.halationThreshold,
       radius: params.halationRadius,
@@ -623,6 +637,7 @@ function WebGpuCanvas({
       renderer.render(canvasContext)
     }
   }, [
+    showOriginal,
     params.halationEnabled,
     params.halationStrength,
     params.halationThreshold,
@@ -643,8 +658,9 @@ function WebGpuCanvas({
     }
   }, [image])
 
-  // Debug mode keyboard shortcuts (secret!)
-  // Shift+D: toggle debug mode
+  // Keyboard shortcuts
+  // O: toggle original image (no effects)
+  // Shift+D: toggle debug mode (secret!)
   // 0: turn off debug view (show image)
   // 1-8: show grain tile 0-7
   useEffect(() => {
@@ -660,6 +676,12 @@ function WebGpuCanvas({
         if (inputType !== 'range' && inputType !== 'checkbox' && inputType !== 'radio') {
           return
         }
+      }
+
+      // O: toggle original image view
+      if (e.key === 'o' || e.key === 'O') {
+        onToggleOriginal()
+        return
       }
 
       const renderer = rendererRef.current
@@ -695,7 +717,7 @@ function WebGpuCanvas({
     return () => {
       window.removeEventListener('keydown', handleKeyDown)
     }
-  }, [])
+  }, [onToggleOriginal])
 
   // Determine cursor style based on zoom and drag state
   const canZoom = viewState.zoom > 1.0
@@ -714,6 +736,15 @@ function WebGpuCanvas({
 
       {/* Zoom toolbar */}
       <div className='absolute right-3 bottom-3 flex items-center gap-1 rounded-lg bg-base-300/80 p-1 backdrop-blur-sm'>
+        <button
+          className={`btn btn-sm px-2 text-xs font-normal ${showOriginal ? 'btn-primary' : 'btn-ghost text-base-content/70'}`}
+          onClick={onToggleOriginal}
+          title='Show original (O)'>
+          original
+        </button>
+
+        <div className='mx-1 h-4 w-px bg-base-content/20' />
+
         <button
           className='btn btn-ghost btn-sm btn-square'
           onClick={handleZoomOut}
