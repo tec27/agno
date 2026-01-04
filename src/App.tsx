@@ -190,7 +190,7 @@ export default function App() {
             <SliderControl
               label='size'
               value={params.grainSize}
-              min={0.25}
+              min={0.1}
               max={4}
               onChange={v => {
                 setParams(p => ({ ...p, grainSize: v }))
