@@ -38,7 +38,8 @@ export class HalationProcessor {
 
   // Uniform buffers
   private thresholdUniformBuffer: GPUBuffer
-  private blurUniformBuffer: GPUBuffer
+  private blurHUniformBuffer: GPUBuffer // Horizontal blur params
+  private blurVUniformBuffer: GPUBuffer // Vertical blur params
   private upsampleBlendUniformBuffer: GPUBuffer
 
   // Sampler for bilinear upsampling
@@ -144,7 +145,12 @@ export class HalationProcessor {
       },
     })
 
-    this.blurUniformBuffer = this.device.createBuffer({
+    this.blurHUniformBuffer = this.device.createBuffer({
+      size: 16, // kernel_radius (i32), sigma (f32), direction (u32), padding
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    })
+
+    this.blurVUniformBuffer = this.device.createBuffer({
       size: 16, // kernel_radius (i32), sigma (f32), direction (u32), padding
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     })
@@ -366,17 +372,17 @@ export class HalationProcessor {
     downsamplePass.dispatchWorkgroups(Math.ceil(dsWidth / 16), Math.ceil(dsHeight / 16))
     downsamplePass.end()
 
-    // Pass 3: Horizontal blur
-    this.device.queue.writeBuffer(this.blurUniformBuffer, 0, new Int32Array([dsRadius]))
-    this.device.queue.writeBuffer(this.blurUniformBuffer, 4, new Float32Array([sigma]))
-    this.device.queue.writeBuffer(this.blurUniformBuffer, 8, new Uint32Array([0, 0])) // direction = 0 (horizontal)
+    // Pass 3: Horizontal blur (using dedicated H buffer)
+    this.device.queue.writeBuffer(this.blurHUniformBuffer, 0, new Int32Array([dsRadius]))
+    this.device.queue.writeBuffer(this.blurHUniformBuffer, 4, new Float32Array([sigma]))
+    this.device.queue.writeBuffer(this.blurHUniformBuffer, 8, new Uint32Array([0, 0])) // direction = 0 (horizontal)
 
     const blurHBindGroup = this.device.createBindGroup({
       layout: this.blurBindGroupLayout,
       entries: [
         { binding: 0, resource: downsampledTex.createView() },
         { binding: 1, resource: blurPingTex.createView() },
-        { binding: 2, resource: { buffer: this.blurUniformBuffer } },
+        { binding: 2, resource: { buffer: this.blurHUniformBuffer } },
       ],
     })
 
@@ -386,15 +392,17 @@ export class HalationProcessor {
     blurHPass.dispatchWorkgroups(Math.ceil(dsWidth / 64), Math.ceil(dsHeight / 4))
     blurHPass.end()
 
-    // Pass 4: Vertical blur
-    this.device.queue.writeBuffer(this.blurUniformBuffer, 8, new Uint32Array([1, 0])) // direction = 1 (vertical)
+    // Pass 4: Vertical blur (using dedicated V buffer)
+    this.device.queue.writeBuffer(this.blurVUniformBuffer, 0, new Int32Array([dsRadius]))
+    this.device.queue.writeBuffer(this.blurVUniformBuffer, 4, new Float32Array([sigma]))
+    this.device.queue.writeBuffer(this.blurVUniformBuffer, 8, new Uint32Array([1, 0])) // direction = 1 (vertical)
 
     const blurVBindGroup = this.device.createBindGroup({
       layout: this.blurBindGroupLayout,
       entries: [
         { binding: 0, resource: blurPingTex.createView() },
         { binding: 1, resource: blurPongTex.createView() },
-        { binding: 2, resource: { buffer: this.blurUniformBuffer } },
+        { binding: 2, resource: { buffer: this.blurVUniformBuffer } },
       ],
     })
 

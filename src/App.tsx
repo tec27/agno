@@ -144,7 +144,7 @@ export default function App() {
               label='strength'
               value={params.halationStrength}
               min={0}
-              max={1}
+              max={2}
               onChange={v => {
                 setParams(p => ({ ...p, halationStrength: v }))
               }}
