@@ -1,8 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { MobileControlsPanel } from './controls/MobileControlsPanel'
+import { SliderControl } from './controls/SliderControl'
 import { configureCanvasContext } from './gpu/context'
 import { Renderer } from './gpu/Renderer'
 import { useWebGpu } from './gpu/useWebGpu'
 import { useObservedDimensions } from './hooks/useObservedDimensions'
+import { DEFAULT_VIEW_STATE, ZOOM_STEP, zoomToward } from './zoom'
 
 const DEFAULT_PARAMS = {
   seed: Math.floor(Math.random() * 0x80000000),
@@ -121,9 +124,120 @@ export default function App() {
     )
   }
 
+  const handleRandomizeSeed = () => {
+    setParams(p => ({ ...p, seed: Math.floor(Math.random() * 0x80000000) }))
+  }
+
+  // Shared preview area content
+  const previewContent = (
+    <>
+      {error && (
+        <div className='alert alert-error absolute top-4 left-4 right-4 z-10 w-auto'>
+          <span>{error}</span>
+        </div>
+      )}
+
+      {gpu.status === 'loading' ? (
+        <p className='text-base-content/40'>Initializing WebGPU...</p>
+      ) : image && renderer ? (
+        <WebGpuCanvas
+          image={image}
+          params={params}
+          showOriginal={showOriginal}
+          onToggleOriginal={() => {
+            setShowOriginal(s => !s)
+          }}
+          renderer={renderer}
+        />
+      ) : (
+        <p className='text-base-content/40'>drop an image here or click to open</p>
+      )}
+    </>
+  )
+
   return (
     <div className='bg-base-100 text-base-content flex h-screen flex-col'>
-      <header className='border-base-300 flex shrink-0 items-center justify-between px-6 py-3'>
+      {/* Mobile Layout */}
+      <div className='flex min-h-0 flex-1 flex-col md:hidden'>
+        {/* Mobile Header */}
+        <header className='flex shrink-0 items-center justify-between px-3 py-2'>
+          <h1 className='text-xl font-semibold'>agno</h1>
+          <div className='flex gap-2'>
+            {image && (
+              <button
+                className={`btn btn-sm btn-square ${showOriginal ? 'btn-primary' : 'btn-ghost'}`}
+                onClick={() => {
+                  setShowOriginal(s => !s)
+                }}
+                title='Show original'>
+                <svg
+                  xmlns='http://www.w3.org/2000/svg'
+                  viewBox='0 0 20 20'
+                  fill='currentColor'
+                  className='h-5 w-5'>
+                  <path
+                    fillRule='evenodd'
+                    d='M1 5.25A2.25 2.25 0 0 1 3.25 3h13.5A2.25 2.25 0 0 1 19 5.25v9.5A2.25 2.25 0 0 1 16.75 17H3.25A2.25 2.25 0 0 1 1 14.75v-9.5Zm1.5 5.81v3.69c0 .414.336.75.75.75h13.5a.75.75 0 0 0 .75-.75v-2.69l-2.22-2.219a.75.75 0 0 0-1.06 0l-1.91 1.909.47.47a.75.75 0 1 1-1.06 1.06L6.53 8.091a.75.75 0 0 0-1.06 0l-2.97 2.97ZM12 7a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z'
+                    clipRule='evenodd'
+                  />
+                </svg>
+              </button>
+            )}
+            <button className='btn btn-ghost btn-sm' onClick={() => fileInputRef.current?.click()}>
+              {image ? 'change' : 'open'}
+            </button>
+            <button
+              className='btn btn-primary btn-sm'
+              onClick={() => {
+                handleExport().catch(console.error)
+              }}
+              disabled={!image || isExporting}>
+              {isExporting ? <span className='loading loading-spinner loading-sm' /> : 'save'}
+            </button>
+          </div>
+        </header>
+
+        {/* Mobile Preview Area */}
+        <div
+          className={`bg-base-200/50 relative flex min-h-0 flex-1 cursor-pointer items-center justify-center overflow-hidden transition-colors ${
+            isDragging ? 'bg-primary/10' : ''
+          }`}
+          onDrop={e => {
+            e.preventDefault()
+            setIsDragging(false)
+            const file = e.dataTransfer.files[0] as File | undefined
+            if (file) handleFile(file).catch(console.error)
+          }}
+          onDragOver={e => {
+            e.preventDefault()
+            setIsDragging(true)
+          }}
+          onDragLeave={e => {
+            e.preventDefault()
+            setIsDragging(false)
+          }}
+          onClick={() => {
+            if (!image) fileInputRef.current?.click()
+          }}>
+          {previewContent}
+
+          {/* Mobile Controls Panel - overlays the canvas */}
+          <div
+            className='absolute inset-x-0 bottom-0'
+            onClick={e => {
+              e.stopPropagation()
+            }}>
+            <MobileControlsPanel
+              params={params}
+              setParams={setParams}
+              onRandomizeSeed={handleRandomizeSeed}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Desktop Layout */}
+      <header className='border-base-300 hidden shrink-0 items-center justify-between px-6 py-3 md:flex'>
         <h1 className='text-3xl font-semibold'>agno</h1>
         <a
           href='https://github.com/tec27/agno'
@@ -137,7 +251,7 @@ export default function App() {
         </a>
       </header>
 
-      <main className='flex min-h-0 flex-1 gap-4 pt-2 pb-6 pr-6 pl-2'>
+      <main className='hidden min-h-0 flex-1 gap-4 pt-2 pb-6 pr-6 pl-2 md:flex'>
         {/* Controls Panel */}
         <aside className='w-72 shrink-0 space-y-3 overflow-y-auto'>
           <button
@@ -365,54 +479,24 @@ export default function App() {
           onClick={() => {
             if (!image) fileInputRef.current?.click()
           }}>
-          <input
-            ref={fileInputRef}
-            type='file'
-            accept='image/*'
-            onChange={e => {
-              const file = e.target.files?.[0]
-              if (file) handleFile(file).catch(console.error)
-            }}
-            className='hidden'
-          />
-
-          {error && (
-            <div className='alert alert-error absolute top-4 left-4 right-4 z-10 w-auto'>
-              <span>{error}</span>
-            </div>
-          )}
-
-          {gpu.status === 'loading' ? (
-            <p className='text-base-content/40'>Initializing WebGPU...</p>
-          ) : image && renderer ? (
-            <WebGpuCanvas
-              image={image}
-              params={params}
-              showOriginal={showOriginal}
-              onToggleOriginal={() => {
-                setShowOriginal(s => !s)
-              }}
-              renderer={renderer}
-            />
-          ) : (
-            <p className='text-base-content/40'>drop an image here or click to open</p>
-          )}
+          {previewContent}
         </div>
       </main>
+
+      {/* Hidden file input (shared between mobile and desktop) */}
+      <input
+        ref={fileInputRef}
+        type='file'
+        accept='image/*'
+        onChange={e => {
+          const file = e.target.files?.[0]
+          if (file) handleFile(file).catch(console.error)
+        }}
+        className='hidden'
+      />
     </div>
   )
 }
-
-interface ViewState {
-  zoom: number
-  centerX: number
-  centerY: number
-}
-
-const DEFAULT_VIEW_STATE: ViewState = { zoom: 1.0, centerX: 0.5, centerY: 0.5 }
-const MIN_ZOOM = 0.1
-const MAX_ZOOM = 32
-const ZOOM_STEP = 1.2 // Multiplier per scroll tick or button click
 
 function WebGpuCanvas({
   image,
@@ -431,16 +515,31 @@ function WebGpuCanvas({
   const canvasContextRef = useRef<GPUCanvasContext | null>(null)
 
   // View state (zoom and pan)
-  const [viewState, setViewState] = useState<ViewState>(DEFAULT_VIEW_STATE)
+  const [viewState, setViewState] = useState(DEFAULT_VIEW_STATE)
 
   // Container dimensions for canvas sizing and zoom percentage calculation
   const [containerRef, containerSize] = useObservedDimensions<HTMLDivElement>()
 
-  // Drag state for panning
+  // Drag state for panning (mouse)
   const [isDragging, setIsDragging] = useState(false)
   const dragStartRef = useRef<{ x: number; y: number; centerX: number; centerY: number } | null>(
     null,
   )
+
+  // Touch state for pinch-to-zoom and drag
+  const touchStateRef = useRef<{
+    type: 'drag' | 'pinch'
+    // For drag
+    startX?: number
+    startY?: number
+    startCenterX?: number
+    startCenterY?: number
+    // For pinch
+    startDistance?: number
+    startZoom?: number
+    pinchCenterX?: number
+    pinchCenterY?: number
+  } | null>(null)
 
   // Sync view state with renderer and trigger re-render
   useEffect(() => {
@@ -451,31 +550,8 @@ function WebGpuCanvas({
     renderer.render(canvasContext)
   }, [renderer, viewState])
 
-  // Zoom toward a specific point
-  function zoomToward(
-    newZoom: number,
-    targetX: number,
-    targetY: number,
-    currentZoom: number,
-    currentCenterX: number,
-    currentCenterY: number,
-  ): ViewState {
-    // Clamp zoom
-    const clampedZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, newZoom))
-
-    // Calculate new center to keep targetX/targetY at the same screen position
-    // Before: screen_pos = (target - center) * zoom + 0.5
-    // After:  screen_pos = (target - new_center) * new_zoom + 0.5
-    // Solving: new_center = target - (target - center) * (zoom / new_zoom)
-    const zoomRatio = currentZoom / clampedZoom
-    const newCenterX = targetX - (targetX - currentCenterX) * zoomRatio
-    const newCenterY = targetY - (targetY - currentCenterY) * zoomRatio
-
-    return { zoom: clampedZoom, centerX: newCenterX, centerY: newCenterY }
-  }
-
   // Calculate aspect ratio scale factors (matches shader logic)
-  function getAspectScaleFactors(): { scaleX: number; scaleY: number } {
+  const getAspectScaleFactors = useCallback((): { scaleX: number; scaleY: number } => {
     if (!containerSize) return { scaleX: 1, scaleY: 1 }
 
     const aspectCanvas = containerSize.width / containerSize.height
@@ -488,7 +564,7 @@ function WebGpuCanvas({
       // Image is taller than canvas - pillarbox (black bars left/right)
       return { scaleX: aspectCanvas / aspectImage, scaleY: 1 }
     }
-  }
+  }, [containerSize, image.height, image.width])
 
   // Handle scroll-to-zoom (added via useEffect to use { passive: false })
   useEffect(() => {
@@ -521,7 +597,14 @@ function WebGpuCanvas({
       const newZoom = viewState.zoom * zoomFactor
 
       setViewState(
-        zoomToward(newZoom, imageX, imageY, viewState.zoom, viewState.centerX, viewState.centerY),
+        zoomToward({
+          newZoom,
+          targetX: imageX,
+          targetY: imageY,
+          currentZoom: viewState.zoom,
+          currentCenterX: viewState.centerX,
+          currentCenterY: viewState.centerY,
+        }),
       )
     }
 
@@ -575,32 +658,198 @@ function WebGpuCanvas({
     dragStartRef.current = null
   }
 
+  // Handle touch gestures (added via useEffect to use { passive: false })
+  useEffect(() => {
+    const canvasEl = canvasRef.current
+    if (!canvasEl || !containerSize) return
+
+    // Helper function to get distance between two touch points
+    function getTouchDistance(touch1: Touch, touch2: Touch): number {
+      return Math.hypot(touch2.clientX - touch1.clientX, touch2.clientY - touch1.clientY)
+    }
+
+    // Helper function to get center point between two touches
+    function getTouchCenter(touch1: Touch, touch2: Touch): { x: number; y: number } {
+      return {
+        x: (touch1.clientX + touch2.clientX) / 2,
+        y: (touch1.clientY + touch2.clientY) / 2,
+      }
+    }
+
+    // Pre-compute aspect ratio values (we know containerSize is defined from the guard above)
+    const aspectCanvas = containerSize.width / containerSize.height
+    const aspectImage = image.width / image.height
+    const scaleX = aspectImage > aspectCanvas ? 1 : aspectCanvas / aspectImage
+    const scaleY = aspectImage > aspectCanvas ? aspectImage / aspectCanvas : 1
+
+    // Convert screen coordinates to image coordinates
+    function screenToImageCoords(clientX: number, clientY: number): { x: number; y: number } {
+      if (!canvasEl) return { x: 0.5, y: 0.5 }
+      const rect = canvasEl.getBoundingClientRect()
+      const canvasX = (clientX - rect.left) / rect.width
+      const canvasY = (clientY - rect.top) / rect.height
+
+      const correctedX = (canvasX - 0.5) * scaleX + 0.5
+      const correctedY = (canvasY - 0.5) * scaleY + 0.5
+
+      // Convert to image coords using current view
+      const imageX = (correctedX - 0.5) / viewState.zoom + viewState.centerX
+      const imageY = (correctedY - 0.5) / viewState.zoom + viewState.centerY
+
+      return { x: imageX, y: imageY }
+    }
+
+    const handleTouchStart = (e: TouchEvent) => {
+      e.preventDefault()
+      const touches = e.touches
+
+      if (touches.length === 1) {
+        // Single touch = drag
+        const touch = touches[0]
+        touchStateRef.current = {
+          type: 'drag',
+          startX: touch.clientX,
+          startY: touch.clientY,
+          startCenterX: viewState.centerX,
+          startCenterY: viewState.centerY,
+        }
+        setIsDragging(true)
+      } else if (touches.length === 2) {
+        // Two touches = pinch to zoom
+        const distance = getTouchDistance(touches[0], touches[1])
+        const center = getTouchCenter(touches[0], touches[1])
+        const imageCoords = screenToImageCoords(center.x, center.y)
+
+        touchStateRef.current = {
+          type: 'pinch',
+          startDistance: distance,
+          startZoom: viewState.zoom,
+          pinchCenterX: imageCoords.x,
+          pinchCenterY: imageCoords.y,
+          startCenterX: viewState.centerX,
+          startCenterY: viewState.centerY,
+        }
+        setIsDragging(false)
+      }
+    }
+
+    const handleTouchMove = (e: TouchEvent) => {
+      e.preventDefault()
+      const touchState = touchStateRef.current
+      if (!touchState) return
+
+      const touches = e.touches
+      const rect = canvasEl.getBoundingClientRect()
+
+      if (touchState.type === 'drag' && touches.length === 1) {
+        // Single touch drag
+        const touch = touches[0]
+
+        const rawDeltaX = (touch.clientX - (touchState.startX ?? 0)) / rect.width
+        const rawDeltaY = (touch.clientY - (touchState.startY ?? 0)) / rect.height
+
+        const { scaleX, scaleY } = getAspectScaleFactors()
+        const deltaX = (rawDeltaX * scaleX) / viewState.zoom
+        const deltaY = (rawDeltaY * scaleY) / viewState.zoom
+
+        setViewState({
+          zoom: viewState.zoom,
+          centerX: (touchState.startCenterX ?? 0.5) - deltaX,
+          centerY: (touchState.startCenterY ?? 0.5) - deltaY,
+        })
+      } else if (touchState.type === 'pinch' && touches.length === 2) {
+        // Pinch zoom
+        const newDistance = getTouchDistance(touches[0], touches[1])
+        const scale = newDistance / (touchState.startDistance ?? 1)
+        const newZoom = (touchState.startZoom ?? 1) * scale
+
+        // Zoom toward the pinch center
+        setViewState(
+          zoomToward({
+            newZoom,
+            targetX: touchState.pinchCenterX ?? 0.5,
+            targetY: touchState.pinchCenterY ?? 0.5,
+            currentZoom: touchState.startZoom ?? 1,
+            currentCenterX: touchState.startCenterX ?? 0.5,
+            currentCenterY: touchState.startCenterY ?? 0.5,
+          }),
+        )
+      } else if (touches.length === 2 && touchState.type === 'drag') {
+        // Transition from drag to pinch
+        const distance = getTouchDistance(touches[0], touches[1])
+        const center = getTouchCenter(touches[0], touches[1])
+        const imageCoords = screenToImageCoords(center.x, center.y)
+
+        touchStateRef.current = {
+          type: 'pinch',
+          startDistance: distance,
+          startZoom: viewState.zoom,
+          pinchCenterX: imageCoords.x,
+          pinchCenterY: imageCoords.y,
+          startCenterX: viewState.centerX,
+          startCenterY: viewState.centerY,
+        }
+      }
+    }
+
+    const handleTouchEnd = (e: TouchEvent) => {
+      e.preventDefault()
+      if (e.touches.length === 0) {
+        touchStateRef.current = null
+        setIsDragging(false)
+      } else if (e.touches.length === 1 && touchStateRef.current?.type === 'pinch') {
+        // Transition from pinch back to drag
+        const touch = e.touches[0]
+        touchStateRef.current = {
+          type: 'drag',
+          startX: touch.clientX,
+          startY: touch.clientY,
+          startCenterX: viewState.centerX,
+          startCenterY: viewState.centerY,
+        }
+        setIsDragging(true)
+      }
+    }
+
+    canvasEl.addEventListener('touchstart', handleTouchStart, { passive: false })
+    canvasEl.addEventListener('touchmove', handleTouchMove, { passive: false })
+    canvasEl.addEventListener('touchend', handleTouchEnd, { passive: false })
+    canvasEl.addEventListener('touchcancel', handleTouchEnd, { passive: false })
+
+    return () => {
+      canvasEl.removeEventListener('touchstart', handleTouchStart)
+      canvasEl.removeEventListener('touchmove', handleTouchMove)
+      canvasEl.removeEventListener('touchend', handleTouchEnd)
+      canvasEl.removeEventListener('touchcancel', handleTouchEnd)
+    }
+  }, [viewState, containerSize, image.width, image.height, getAspectScaleFactors])
+
   // Zoom control functions for toolbar
   function handleZoomIn() {
     const newZoom = viewState.zoom * ZOOM_STEP
     setViewState(
-      zoomToward(
+      zoomToward({
         newZoom,
-        viewState.centerX,
-        viewState.centerY,
-        viewState.zoom,
-        viewState.centerX,
-        viewState.centerY,
-      ),
+        targetX: viewState.centerX,
+        targetY: viewState.centerY,
+        currentZoom: viewState.zoom,
+        currentCenterX: viewState.centerX,
+        currentCenterY: viewState.centerY,
+      }),
     )
   }
 
   function handleZoomOut() {
     const newZoom = viewState.zoom / ZOOM_STEP
     setViewState(
-      zoomToward(
+      zoomToward({
         newZoom,
-        viewState.centerX,
-        viewState.centerY,
-        viewState.zoom,
-        viewState.centerX,
-        viewState.centerY,
-      ),
+        targetX: viewState.centerX,
+        targetY: viewState.centerY,
+        currentZoom: viewState.zoom,
+        currentCenterX: viewState.centerX,
+        currentCenterY: viewState.centerY,
+      }),
     )
   }
 
@@ -625,14 +874,14 @@ function WebGpuCanvas({
     // To show 100% native pixels, we need zoom = 1 / baseScale
     const targetZoom = 1 / baseScale
     setViewState(
-      zoomToward(
-        targetZoom,
-        viewState.centerX,
-        viewState.centerY,
-        viewState.zoom,
-        viewState.centerX,
-        viewState.centerY,
-      ),
+      zoomToward({
+        newZoom: targetZoom,
+        targetX: viewState.centerX,
+        targetY: viewState.centerY,
+        currentZoom: viewState.zoom,
+        currentCenterX: viewState.centerX,
+        currentCenterY: viewState.centerY,
+      }),
     )
   }
 
@@ -664,6 +913,9 @@ function WebGpuCanvas({
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas || !containerSize) return
+
+    // Guard against zero-sized containers (can happen during initial layout)
+    if (containerSize.width <= 0 || containerSize.height <= 0) return
 
     // Size canvas to fill container (shader handles aspect ratio)
     canvas.width = Math.round(containerSize.width * window.devicePixelRatio)
@@ -835,15 +1087,15 @@ function WebGpuCanvas({
     <div ref={containerRef} className='relative h-full w-full'>
       <canvas
         ref={canvasRef}
-        className={`h-full w-full ${cursorClass}`}
+        className={`h-full w-full touch-none ${cursorClass}`}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
       />
 
-      {/* Zoom toolbar */}
-      <div className='absolute right-3 bottom-3 flex items-center gap-1 rounded-lg bg-base-300/80 p-1 backdrop-blur-sm'>
+      {/* Zoom toolbar - hidden on mobile (pinch-to-zoom + header controls) */}
+      <div className='absolute bottom-3 right-3 hidden items-center gap-1 rounded-lg bg-base-300/80 p-1 backdrop-blur-sm md:flex'>
         <button
           className={`btn btn-sm px-2 text-xs font-normal ${showOriginal ? 'btn-primary' : 'btn-ghost text-base-content/70'}`}
           onClick={onToggleOriginal}
@@ -933,96 +1185,6 @@ function EffectSection({
         </label>
         {enabled && <div className='space-y-4 pb-4'>{children}</div>}
       </div>
-    </div>
-  )
-}
-
-function SliderControl({
-  label,
-  value,
-  defaultValue,
-  min,
-  max,
-  onChange,
-  precision = 2,
-}: {
-  label: string
-  value: number
-  defaultValue: number
-  min: number
-  max: number
-  onChange: (value: number) => void
-  precision?: number
-}) {
-  const [isEditing, setIsEditing] = useState(false)
-  const [editValue, setEditValue] = useState('')
-
-  const step = (max - min) / 100
-  const fineStep = Math.pow(10, -precision)
-
-  function commitEdit() {
-    const parsed = parseFloat(editValue)
-    if (!isNaN(parsed)) {
-      onChange(Math.max(min, Math.min(max, parsed)))
-    }
-    setIsEditing(false)
-  }
-
-  return (
-    <div className='px-3'>
-      <div className='px-1 mb-1 flex justify-between text-sm'>
-        <span className='text-base-content/60 select-none pointer-events-none'>{label}</span>
-        {isEditing ? (
-          <input
-            type='text'
-            autoFocus
-            value={editValue}
-            onChange={e => {
-              setEditValue(e.target.value)
-            }}
-            onBlur={commitEdit}
-            onKeyDown={e => {
-              if (e.key === 'Enter') commitEdit()
-              if (e.key === 'Escape') setIsEditing(false)
-              if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-                e.preventDefault()
-                const arrowStep = e.shiftKey ? fineStep : step
-                const delta = e.key === 'ArrowUp' ? arrowStep : -arrowStep
-                const parsed = parseFloat(editValue)
-                if (!isNaN(parsed)) {
-                  const newVal = Math.max(min, Math.min(max, parsed + delta))
-                  setEditValue(newVal.toFixed(precision))
-                  onChange(newVal)
-                }
-              }
-            }}
-            className='bg-base-300 w-16 rounded px-1 text-right font-mono'
-          />
-        ) : (
-          <span
-            className='text-base-content/40 hover:text-base-content/60 cursor-pointer font-mono'
-            onClick={() => {
-              setEditValue(value.toFixed(precision))
-              setIsEditing(true)
-            }}>
-            {value.toFixed(precision)}
-          </span>
-        )}
-      </div>
-      <input
-        type='range'
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={e => {
-          onChange(parseFloat(e.target.value))
-        }}
-        onDoubleClick={() => {
-          onChange(defaultValue)
-        }}
-        className='range range-primary range-sm'
-      />
     </div>
   )
 }

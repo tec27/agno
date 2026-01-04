@@ -40,3 +40,10 @@
   --depth: 0;
   --noise: 0;
 }
+
+/* Safe area handling for mobile devices with notches/home indicators */
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  .mobile-controls {
+    padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));
+  }
+}
