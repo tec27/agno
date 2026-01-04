@@ -20,6 +20,7 @@ const DEFAULT_PARAMS = {
   halationStrength: 0.3,
   halationThreshold: 0.8,
   halationRadius: 20,
+  halationMonochrome: false,
 }
 
 export type EffectParams = typeof DEFAULT_PARAMS
@@ -181,6 +182,7 @@ export default function App() {
             <SliderControl
               label='strength'
               value={params.grainStrength}
+              defaultValue={DEFAULT_PARAMS.grainStrength}
               min={0}
               max={5}
               onChange={v => {
@@ -190,6 +192,7 @@ export default function App() {
             <SliderControl
               label='size'
               value={params.grainSize}
+              defaultValue={DEFAULT_PARAMS.grainSize}
               min={0.1}
               max={4}
               onChange={v => {
@@ -199,6 +202,7 @@ export default function App() {
             <SliderControl
               label='saturation'
               value={params.grainSaturation}
+              defaultValue={DEFAULT_PARAMS.grainSaturation}
               min={0}
               max={2}
               onChange={v => {
@@ -216,6 +220,7 @@ export default function App() {
             <SliderControl
               label='toe'
               value={params.filmToe}
+              defaultValue={DEFAULT_PARAMS.filmToe}
               min={-0.2}
               max={0.5}
               precision={3}
@@ -226,6 +231,7 @@ export default function App() {
             <SliderControl
               label='midtone bias'
               value={params.filmMidtoneBias}
+              defaultValue={DEFAULT_PARAMS.filmMidtoneBias}
               min={0}
               max={2}
               onChange={v => {
@@ -243,6 +249,7 @@ export default function App() {
             <SliderControl
               label='strength'
               value={params.halationStrength}
+              defaultValue={DEFAULT_PARAMS.halationStrength}
               min={0}
               max={2}
               onChange={v => {
@@ -252,6 +259,7 @@ export default function App() {
             <SliderControl
               label='threshold'
               value={params.halationThreshold}
+              defaultValue={DEFAULT_PARAMS.halationThreshold}
               min={0}
               max={1}
               onChange={v => {
@@ -261,6 +269,7 @@ export default function App() {
             <SliderControl
               label='radius'
               value={params.halationRadius}
+              defaultValue={DEFAULT_PARAMS.halationRadius}
               min={5}
               max={100}
               precision={0}
@@ -268,6 +277,17 @@ export default function App() {
                 setParams(p => ({ ...p, halationRadius: v }))
               }}
             />
+            <label className='flex cursor-pointer items-center justify-between px-3'>
+              <span className='text-base-content/60 text-sm select-none'>monochrome</span>
+              <input
+                type='checkbox'
+                checked={params.halationMonochrome}
+                onChange={e => {
+                  setParams(p => ({ ...p, halationMonochrome: e.target.checked }))
+                }}
+                className='toggle toggle-primary toggle-sm'
+              />
+            </label>
           </EffectSection>
 
           {/* Export Section */}
@@ -292,6 +312,7 @@ export default function App() {
                 <SliderControl
                   label='quality'
                   value={exportQuality}
+                  defaultValue={0.95}
                   min={0.1}
                   max={1}
                   precision={2}
@@ -719,6 +740,7 @@ function WebGpuCanvas({
       strength: params.halationStrength,
       threshold: params.halationThreshold,
       radius: params.halationRadius,
+      monochrome: params.halationMonochrome,
     })
 
     if (canvasContext) {
@@ -731,6 +753,7 @@ function WebGpuCanvas({
     params.halationStrength,
     params.halationThreshold,
     params.halationRadius,
+    params.halationMonochrome,
   ])
 
   // Upload image when it changes
@@ -898,7 +921,7 @@ function EffectSection({
     <div className='card bg-base-200 border-primary/30 mx-2 border'>
       <div className='card-body p-0'>
         <label className='flex cursor-pointer items-center justify-between py-4 pr-3 pl-4'>
-          <span className='card-title text-base'>{label}</span>
+          <span className='card-title text-base select-none'>{label}</span>
           <input
             type='checkbox'
             checked={enabled}
@@ -917,6 +940,7 @@ function EffectSection({
 function SliderControl({
   label,
   value,
+  defaultValue,
   min,
   max,
   onChange,
@@ -924,6 +948,7 @@ function SliderControl({
 }: {
   label: string
   value: number
+  defaultValue: number
   min: number
   max: number
   onChange: (value: number) => void
@@ -992,6 +1017,9 @@ function SliderControl({
         value={value}
         onChange={e => {
           onChange(parseFloat(e.target.value))
+        }}
+        onDoubleClick={() => {
+          onChange(defaultValue)
         }}
         className='range range-primary range-sm'
       />

@@ -5,7 +5,7 @@ struct HalationParams {
     strength: f32,      // Halation intensity (0-1)
     image_width: f32,   // Output image width
     image_height: f32,  // Output image height
-    _padding: f32,
+    monochrome: f32,    // If > 0.5, use grayscale glow instead of red-shifted
 }
 
 // Luminance coefficients (BT.709)
@@ -35,9 +35,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // Compute glow luminance from the blurred highlight
     let glow_lum = dot(halation_raw.rgb, LUMA_COEFFS);
 
-    // Create red-shifted halation color (warm film halation look)
-    // Red channel gets full luminance, green gets 15%, blue gets none
-    let halation_color = vec3f(glow_lum * 1.0, glow_lum * 0.15, 0.0);
+    // Create halation color - either red-shifted or monochrome
+    var halation_color: vec3f;
+    if (params.monochrome > 0.5) {
+        // Monochrome: use luminance for all channels (neutral glow)
+        halation_color = vec3f(glow_lum);
+    } else {
+        // Red-shifted halation color (warm film halation look)
+        // Red channel gets full luminance, green gets 15%, blue gets none
+        halation_color = vec3f(glow_lum * 1.0, glow_lum * 0.15, 0.0);
+    }
 
     // Additive blend with strength control
     // Using 2.0 multiplier as per implementation plan

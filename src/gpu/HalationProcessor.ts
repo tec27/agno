@@ -9,6 +9,7 @@ export interface HalationParams {
   strength: number // 0-1
   threshold: number // 0-1
   radius: number // blur radius in pixels (at full resolution)
+  monochrome: boolean // if true, use grayscale glow instead of red-shifted
 }
 
 /**
@@ -62,6 +63,7 @@ export class HalationProcessor {
     strength: 0.3,
     threshold: 0.8,
     radius: 20,
+    monochrome: false,
   }
 
   constructor(ctx: GpuContext) {
@@ -181,7 +183,7 @@ export class HalationProcessor {
     })
 
     this.upsampleBlendUniformBuffer = this.device.createBuffer({
-      size: 16, // strength, width, height, padding
+      size: 16, // strength, width, height, monochrome
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     })
   }
@@ -417,7 +419,12 @@ export class HalationProcessor {
     this.device.queue.writeBuffer(
       this.upsampleBlendUniformBuffer,
       0,
-      new Float32Array([this.params.strength, this.imageWidth, this.imageHeight, 0]),
+      new Float32Array([
+        this.params.strength,
+        this.imageWidth,
+        this.imageHeight,
+        this.params.monochrome ? 1.0 : 0.0,
+      ]),
     )
 
     const upsampleBlendBindGroup = this.device.createBindGroup({
